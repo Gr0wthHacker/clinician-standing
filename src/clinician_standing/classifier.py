@@ -376,6 +376,28 @@ _LAPSED_STATUSES: frozenset[str] = frozenset({"expired", "lapsed", "suspended", 
 #: State-scoped duties a lapsed licence makes high-consequence.
 _LAPSE_SENSITIVE: frozenset[str] = frozenset({"license_renewal", "csr_renewal", "ce_cycle"})
 
+# A screen (exclusion) is satisfied roster-wide by a fresh file, not by a
+# per-clinician credential row: a CLEAN clinician has no sanctions row at all, so
+# support keyed on a credential would find nothing and wrongly queue every clean
+# screen. This gives, per obligation type a primary source attests to, whether
+# that source has a fresh assertion and the evidence id to cite -- for
+# exclusion_screen, the latest fresh OIG LEIE / SAM file. A hit is handled
+# separately (exclusion_hit); this is what lets a clean screen auto-clear.
+_QUERY_SCREEN_COVERAGE = """
+select ot as obligation_type, e.id as evidence_id,
+       (e.freshness_expires_at > %(now)s) as fresh
+from sources s
+cross join lateral unnest(s.attests_obligation_types) as ot
+join lateral (
+    select id, freshness_expires_at
+    from evidence
+    where source_key = s.key and deleted_at is null
+    order by fetched_at desc
+    limit 1
+) e on true
+where s.is_primary_source
+"""
+
 
 def _is_strong_single(match_keys: Any) -> bool:
     """True when match_keys describes a strong single identity match (cond 3)."""
@@ -417,6 +439,13 @@ def _gather(conn: psycopg.Connection, as_of: date) -> list[ObligationFacts]:
     }
     excluded = {r[0] for r in fetch_all(conn, _QUERY_EXCLUSIONS, {"as_of": as_of})}
 
+    # Per-type roster-wide screen coverage: the evidence id of the latest fresh
+    # primary assertion for each attested type. Keeps only fresh ones.
+    screen_coverage: dict[str, UUID] = {}
+    for otype, evidence_id, fresh in fetch_all(conn, _QUERY_SCREEN_COVERAGE, {"now": now}):
+        if fresh:
+            screen_coverage[otype] = evidence_id
+
     lapsed_billing: dict[tuple[UUID, str], bool] = {}
     status_by_key: dict[tuple[UUID, str], set[str]] = {}
     for clinician_id, state, status, expiry, billing in fetch_all(
@@ -440,6 +469,7 @@ def _gather(conn: psycopg.Connection, as_of: date) -> list[ObligationFacts]:
                 excluded=excluded,
                 lapsed_billing=lapsed_billing,
                 status_by_key=status_by_key,
+                screen_coverage=screen_coverage,
             )
         )
     return facts
@@ -455,6 +485,7 @@ def _facts_for(
     excluded: set[UUID],
     lapsed_billing: dict[tuple[UUID, str], bool],
     status_by_key: dict[tuple[UUID, str], set[str]],
+    screen_coverage: dict[str, UUID],
 ) -> ObligationFacts:
     """Assemble one obligation's facts from the preloaded maps."""
     (obligation_id, clinician_id, _practice_id, otype, state, _payer,
@@ -465,6 +496,24 @@ def _facts_for(
     best = entry["best"] if entry else None
     sources = entry["sources"] if entry else set()
 
+    if otype in SCREEN_TYPES:
+        # A clean screen is verified by a fresh roster-wide file (screen_coverage
+        # holds only fresh entries), matched by NPI, with no conflicting source.
+        screen_evidence = screen_coverage.get(otype)
+        has_primary = screen_evidence is not None
+        evidence_fresh = has_primary
+        strong_single = has_primary
+        has_conflict = False
+        evidence_id = screen_evidence
+    else:
+        has_primary = best is not None
+        evidence_fresh = bool(best and best["fresh"])
+        strong_single = bool(best and best["strong"])
+        key_cs_conflict = (clinician_id, state) if state is not None else None
+        divergent = bool(key_cs_conflict and len(status_by_key.get(key_cs_conflict, set())) > 1)
+        has_conflict = len(sources) > 1 and divergent
+        evidence_id = best["evidence_id"] if best else None
+
     gen_field = generating_field(otype)
     if rule_version is None or gen_field is None:
         rule_current = True  # a default-derived duty has no cited rule to be stale
@@ -474,26 +523,23 @@ def _facts_for(
         rule_current = True  # federal/payer duties are not state-rule-scoped here
 
     key_cs = (clinician_id, state) if state is not None else None
-    # Conflict proxy: two primary sources back this duty, and the same-state
-    # licence rows disagree on status.
-    divergent_status = bool(key_cs and len(status_by_key.get(key_cs, set())) > 1)
 
     return ObligationFacts(
         obligation_id=obligation_id,
         obligation_type=otype,
         severity=severity,
         actionable=window_opens is not None and window_opens <= as_of,
-        has_primary_evidence=best is not None,
-        evidence_fresh=bool(best and best["fresh"]),
-        strong_single_match=bool(best and best["strong"]),
-        has_conflict=len(sources) > 1 and divergent_status,
+        has_primary_evidence=has_primary,
+        evidence_fresh=evidence_fresh,
+        strong_single_match=strong_single,
+        has_conflict=has_conflict,
         rule_current=rule_current,
         open_conflict=(state, gen_field) in open_conflicts if state and gen_field else False,
         exclusion_hit=(otype == "exclusion_screen" and clinician_id in excluded),
         lapsed_while_billing=(
             otype in _LAPSE_SENSITIVE and bool(key_cs and lapsed_billing.get(key_cs))
         ),
-        evidence_id=best["evidence_id"] if best else None,
+        evidence_id=evidence_id,
     )
 
 
