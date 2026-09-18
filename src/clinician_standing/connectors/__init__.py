@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from .base import Connector, ConnectorError, DiffResult, RunResult
 from .cms_dac import CmsDacConnector
 from .cms_revalidation import CmsRevalidationConnector
+from .nursys import NursysConnector
 from .oig_leie import OigLeieConnector
 
 __all__ = [
@@ -20,6 +21,7 @@ __all__ = [
     "Connector",
     "ConnectorError",
     "DiffResult",
+    "NursysConnector",
     "OigLeieConnector",
     "RunResult",
     "connector_keys",
@@ -27,11 +29,13 @@ __all__ = [
 ]
 
 #: Registry key -> connector class. Order matters for ``ingest all``: the DAC
-#: file creates the practices and clinicians that the other two join to.
+#: file creates the practices and clinicians that the other connectors join to,
+#: so nursys (which derives licenses for already-enrolled clinicians) runs last.
 CONNECTORS: Mapping[str, type[Connector]] = {
     CmsDacConnector.key: CmsDacConnector,
     CmsRevalidationConnector.key: CmsRevalidationConnector,
     OigLeieConnector.key: OigLeieConnector,
+    NursysConnector.key: NursysConnector,
 }
 
 
