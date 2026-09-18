@@ -1,0 +1,66 @@
+name: CI
+
+# Fast feedback on every change: lint, types, tests.
+# Deliberately hermetic — no network calls, no database, no secrets.
+# If a job here needs a secret, it belongs in ingest-monthly.yml instead.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+# A new push to the same branch cancels the run already in flight.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  check:
+    name: lint / typecheck / test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install package and dev tooling
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      # Each check runs even if an earlier one failed, so one push surfaces
+      # every problem instead of one problem at a time.
+      - name: Ruff lint
+        id: ruff_lint
+        run: ruff check --output-format=github src tests
+
+      - name: Ruff format check
+        id: ruff_format
+        if: ${{ !cancelled() }}
+        run: ruff format --check src tests
+
+      - name: Mypy
+        id: mypy
+        if: ${{ !cancelled() }}
+        run: mypy
+
+      - name: Pytest
+        id: pytest
+        if: ${{ !cancelled() }}
+        # -p no:cacheprovider keeps the runner from writing .pytest_cache.
+        # No network and no DATABASE_URL are set here on purpose: any test that
+        # needs either must be marked `network` or `database` and deselected.
+        run: pytest -p no:cacheprovider -m "not network and not database"

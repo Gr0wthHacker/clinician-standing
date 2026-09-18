@@ -1,0 +1,118 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "clinician-standing"
+version = "0.1.0"
+description = "Ingest layer for the Clinician Standing verification platform: downloads federal healthcare bulk files, diffs them against the last run, and loads evidence into Supabase Postgres."
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+license = { text = "Proprietary" }
+authors = [{ name = "Jack Gierlich" }]
+keywords = ["healthcare", "credentialing", "cms", "oig", "leie", "supabase"]
+
+# Runtime dependencies. Keep this list short on purpose: the ingest layer is a
+# handful of downloads, a CSV parse and a COPY into Postgres.
+dependencies = [
+  "psycopg[binary]>=3.1,<4",   # Postgres driver; [binary] avoids needing libpq at build time
+  "requests>=2.31,<3",         # bulk-file downloads (streamed to disk, never held in memory)
+  "pandas>=2.1,<3",            # only for the 839MB DAC / 540MB revalidation CSV parse
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0,<9",
+  "ruff>=0.5,<1",
+  "mypy>=1.10,<2",
+  "types-requests>=2.31",      # stubs so mypy can see requests' signatures
+  "pandas-stubs>=2.1",         # stubs for the pandas call sites
+]
+
+[project.scripts]
+clinician-standing = "clinician_standing.cli:main"
+
+[project.urls]
+Homepage = "https://clinicianstanding.com"
+
+# --- packaging -------------------------------------------------------------
+# src/ layout: the installed package is the one under test, never the working tree.
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["clinician_standing*"]
+
+[tool.setuptools.package-data]
+clinician_standing = ["py.typed"]
+
+# --- ruff ------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+extend-exclude = ["data", "storage", ".venv"]
+
+[tool.ruff.lint]
+select = [
+  "E", "W",   # pycodestyle
+  "F",        # pyflakes
+  "I",        # isort (import ordering)
+  "B",        # bugbear
+  "UP",       # pyupgrade
+  "SIM",      # simplify
+  "C4",       # comprehensions
+  "RUF",      # ruff-specific
+]
+ignore = [
+  "E501",     # line length is enforced by the formatter, not the linter
+  "B008",     # function call in default argument: common and deliberate in CLI code
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101"]  # asserts are the point of a test file
+
+[tool.ruff.lint.isort]
+known-first-party = ["clinician_standing", "conftest"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+# --- mypy ------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.11"
+mypy_path = "src"
+packages = ["clinician_standing"]
+namespace_packages = true
+explicit_package_bases = true
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_return_any = true
+no_implicit_optional = true
+check_untyped_defs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+strict_equality = true
+exclude = ["^data/", "^storage/", "^\\.venv/"]
+
+# Tests may be loosely typed; the production path may not be.
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+check_untyped_defs = false
+
+# Third-party packages that ship no stubs.
+[[tool.mypy.overrides]]
+module = ["pandas.*"]
+ignore_missing_imports = true
+
+# --- pytest ----------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["src", "tests"]
+addopts = "-ra --strict-markers --strict-config"
+markers = [
+  "network: test requires outbound network access (excluded from CI)",
+  "database: test requires a live Postgres connection (excluded from CI)",
+]
+filterwarnings = ["error::DeprecationWarning:clinician_standing.*"]

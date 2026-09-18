@@ -1,0 +1,171 @@
+name: Monthly federal ingest
+
+# =============================================================================
+# READ THIS BEFORE WONDERING WHY THE CRON NEVER FIRES
+#
+#   Scheduled workflows are DISABLED on private repositories owned by a free
+#   personal GitHub account. On the free tier a private repo gets Actions
+#   minutes, but `on: schedule` is silently ignored — no run, no error, no
+#   notification. There are exactly two fixes:
+#
+#     1. GitHub Pro on the owning account ($4/month), or
+#     2. make the repository public.
+#
+#   `workflow_dispatch` (the "Run workflow" button, and `gh workflow run`)
+#   works on the free tier regardless, on private repos included. Until one of
+#   the two fixes is in place, treat this workflow as manual-only and put a
+#   recurring calendar reminder on the first of the month.
+#
+#   Second caveat that bites even on paid plans: GitHub disables scheduled
+#   workflows in a repository with no commit activity for 60 days, and emails
+#   the owner. A repo that only runs ingest will hit this. Push something, or
+#   re-enable the workflow from the Actions tab when it happens.
+# =============================================================================
+
+on:
+  schedule:
+    # 07:15 UTC on the 1st of every month. CMS publishes the Doctors and
+    # Clinicians file and the revalidation file monthly; OIG publishes LEIE
+    # in the first week. Running at :15 rather than :00 avoids the top-of-hour
+    # queue on GitHub's shared schedulers.
+    - cron: "15 7 1 * *"
+  workflow_dispatch:
+    inputs:
+      sources:
+        description: "Comma-separated source keys, or 'all'"
+        required: false
+        default: "all"
+      dry_run:
+        description: "Download and diff but do not write to the database"
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+# Never let two ingests write the same tables at once. A queued run waits
+# rather than being cancelled — a half-finished ingest is worse than a late one.
+concurrency:
+  group: ingest-monthly
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.11"
+  STORAGE_PATH: ${{ github.workspace }}/storage
+
+jobs:
+  ingest:
+    name: Download, diff and load
+    runs-on: ubuntu-latest
+    # Generous on purpose: ~1.4GB of downloads from CMS (which is slow and
+    # occasionally stalls), a 3.39M-row parse, and the COPY into Supabase.
+    # A normal run is 10-25 minutes; the ceiling is here to catch a hang.
+    timeout-minutes: 180
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ---------------------------------------------------------------------
+      # Disk. A stock ubuntu-latest runner has a 14GB SSD with roughly 14GB
+      # free after the preinstalled image, and the image itself (Android SDK,
+      # .NET, GHC, CodeQL bundles, Docker images) eats most of the partition.
+      # We need: 839MB DAC + 540MB revalidation + 16MB LEIE, plus the previous
+      # run's copies held for diffing, plus decompression headroom. That fits
+      # in 14GB but not comfortably, so reclaim the obvious ~25GB first.
+      # ---------------------------------------------------------------------
+      - name: Free disk space
+        run: |
+          echo "::group::Before"
+          df -h /
+          echo "::endgroup::"
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost /usr/local/share/powershell \
+                      /usr/share/swift "$AGENT_TOOLSDIRECTORY" || true
+          sudo docker image prune --all --force || true
+          sudo apt-get clean || true
+          echo "::group::After"
+          df -h /
+          echo "::endgroup::"
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      - name: Prepare storage directory
+        run: mkdir -p "$STORAGE_PATH"
+
+      # ---------------------------------------------------------------------
+      # The ingest itself. `continue-on-error` is deliberate: a failure must
+      # still reach the artifact-upload and status steps below, so that a bad
+      # run produces a diff summary and a log we can read, not an empty page.
+      # The job is failed explicitly at the end.
+      # ---------------------------------------------------------------------
+      - name: Run ingest
+        id: ingest
+        continue-on-error: true
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          LOG_LEVEL: INFO
+          INGEST_SOURCES: ${{ github.event.inputs.sources || 'all' }}
+        run: |
+          set -o pipefail
+          ARGS="--all"
+          if [ "${INGEST_SOURCES}" != "all" ] && [ -n "${INGEST_SOURCES}" ]; then
+            ARGS="--sources ${INGEST_SOURCES}"
+          fi
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+          clinician-standing ingest $ARGS 2>&1 | tee "$STORAGE_PATH/ingest.log"
+
+      - name: Disk usage after ingest
+        if: ${{ !cancelled() }}
+        run: df -h /
+
+      - name: Source status
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: clinician-standing status | tee "$STORAGE_PATH/status.txt"
+
+      # Upload the small artifacts only. The 839MB source files stay on the
+      # runner and die with it; retaining them would blow through storage quota
+      # and they are re-downloadable from CMS anyway.
+      - name: Upload diff summary
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ingest-diff-${{ github.run_id }}
+          path: |
+            storage/diffs/**
+            storage/*.json
+            storage/ingest.log
+            storage/status.txt
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Record failure
+        if: ${{ steps.ingest.outcome == 'failure' }}
+        run: |
+          {
+            echo "## Monthly ingest FAILED"
+            echo ""
+            echo "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo ""
+            echo "Last 50 log lines:"
+            echo '```'
+            tail -n 50 "$STORAGE_PATH/ingest.log" 2>/dev/null || echo "(no log captured)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Ingest step failed; failing the job after artifacts were uploaded."
+          exit 1

@@ -1,0 +1,137 @@
+# =============================================================================
+# This repository handles 1.4GB of federal bulk files and a production database
+# URL. Nothing in data/, storage/ or .env may ever reach a commit.
+# =============================================================================
+
+# --- secrets ---------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+secrets.json
+service-account*.json
+.secrets/
+
+# --- bulk data and evidence store ------------------------------------------
+# The CMS DAC file alone is 839MB. GitHub rejects >100MB blobs and the push
+# failure happens AFTER the object is in local history, which is painful to undo.
+data/
+storage/
+downloads/
+raw/
+evidence/
+snapshots/
+diffs/
+*.csv
+*.tsv
+*.psv
+*.pkl
+*.pickle
+*.parquet
+*.feather
+*.zip
+*.gz
+*.bz2
+*.xz
+*.7z
+*.tar
+*.dat
+*.sqlite
+*.sqlite3
+*.db
+
+# Exceptions: small committed fixtures the tests need.
+!tests/fixtures/**/*.csv
+!tests/fixtures/**/*.tsv
+
+# --- python ----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# --- virtualenvs -----------------------------------------------------------
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.python-version
+.tool-versions
+
+# --- tooling caches --------------------------------------------------------
+.pytest_cache/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
+.cache/
+
+# --- notebooks -------------------------------------------------------------
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# --- supabase --------------------------------------------------------------
+.supabase/
+supabase/.temp/
+supabase/.branches/
+
+# --- editors and IDEs ------------------------------------------------------
+.vscode/
+.idea/
+*.iml
+*.swp
+*.swo
+*~
+.\#*
+\#*\#
+.project
+.pydevproject
+.settings/
+
+# --- OS --------------------------------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# --- logs and scratch ------------------------------------------------------
+*.log
+logs/
+tmp/
+scratch/
+*.bak
+*.orig
+*.rej
