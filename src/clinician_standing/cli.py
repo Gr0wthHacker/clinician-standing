@@ -33,6 +33,7 @@ import psycopg
 from .audit import PracticeNotFound, audit_practice, render_html, render_json, render_markdown
 from .config import REQUIRED_TABLES, ConfigError, get_settings
 from .connectors import CONNECTORS, RunResult, connector_keys, get_connector
+from .connectors.nursys import rotate_account_passwords
 from .db import connect, fetch_all, missing_tables
 from .engine import run as run_obligations_engine
 from .evidence import EvidenceRequired
@@ -182,6 +183,22 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=25,
         help="rows of the priority-ordered queue to print (default 25; 0 for none)",
+    )
+
+    # nursys: operations on the Nursys e-Notify accounts. `rotate` changes the
+    # API password of any account nearing the 90-day expiry (spec 3.3). It is a
+    # separate, weekly job -- never folded into ingest -- because a single
+    # institution credential must be rotated proactively, not on an auth failure.
+    nursys = sub.add_parser("nursys", help="Nursys e-Notify account operations")
+    nursys_sub = nursys.add_subparsers(dest="nursys_command", required=True)
+    nursys_rotate = nursys_sub.add_parser(
+        "rotate", help="proactively rotate API passwords for accounts nearing expiry"
+    )
+    nursys_rotate.add_argument(
+        "--before-days",
+        type=int,
+        default=None,
+        help="rotate accounts whose password is older than this many days (default 80)",
     )
 
     # audit: the free roster audit (PRD section 9). Read-only, and the only
@@ -586,6 +603,39 @@ def _run_engine(as_of_raw: str | None, as_json: bool, dry_run: bool, limit: int)
     return EXIT_OK
 
 
+# ---------------------------------------------------------------------- nursys
+
+
+def _run_nursys_rotate(before_days: int | None, as_json: bool) -> int:
+    """Rotate Nursys API passwords for accounts nearing the 90-day expiry.
+
+    Args:
+        before_days: Rotate accounts older than this; None uses the default (80).
+        as_json: Emit JSON rather than text.
+
+    Returns:
+        Process exit code. Non-zero when any account failed to rotate, so a
+        scheduler can alert on the exit status alone.
+    """
+    settings = get_settings()
+    kwargs: dict[str, Any] = {}
+    if before_days is not None:
+        kwargs["rotate_before_days"] = before_days
+    results = rotate_account_passwords(settings, **kwargs)
+    failures = [r for r in results if r.get("status") == "failed"]
+
+    if as_json:
+        print(json.dumps({"rotated": results}, indent=2, default=str))
+    else:
+        if not results:
+            print("no Nursys accounts were due for rotation")
+        for row in results:
+            print(f"{row['label']:<30} {row['status']}")
+            if row.get("error"):
+                print(f"  error: {row['error']}")
+    return EXIT_FAILED if failures else EXIT_OK
+
+
 # ---------------------------------------------------------------------- audit
 
 
@@ -679,6 +729,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _run_init_check(args.json)
         if args.command == "engine" and args.engine_command == "run":
             return _run_engine(args.as_of, args.json, args.dry_run, args.limit)
+        if args.command == "nursys" and args.nursys_command == "rotate":
+            return _run_nursys_rotate(args.before_days, args.json)
         if args.command == "audit":
             # The global --json flag predates --format; honour it as an alias
             # rather than making the two disagree silently.
