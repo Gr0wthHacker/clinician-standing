@@ -32,6 +32,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import psycopg
+from psycopg import sql
 from psycopg.types.json import Jsonb
 
 from .config import Settings, get_settings
@@ -458,10 +459,19 @@ def insert_credential(
     row_id = uuid4()
     payload["id"] = row_id
 
-    columns = ", ".join(f'"{c}"' for c in payload)
-    placeholders = ", ".join(f"%({c})s" for c in payload)
+    # Build the statement with psycopg's SQL composition rather than an f-string.
+    # `table` is already checked against CREDENTIAL_TABLES and the column names are
+    # our own, not user input, so this is defense in depth -- but an identifier
+    # interpolated by hand is exactly the shape that stops being safe the day a
+    # column name comes from somewhere less trusted. sql.Identifier quotes each
+    # name and sql.Placeholder emits the %(name)s bind the payload is passed under.
+    statement = sql.SQL("insert into {table} ({columns}) values ({placeholders})").format(
+        table=sql.Identifier(table),
+        columns=sql.SQL(", ").join(sql.Identifier(c) for c in payload),
+        placeholders=sql.SQL(", ").join(sql.Placeholder(c) for c in payload),
+    )
     with conn.cursor() as cur:
-        cur.execute(f"insert into {table} ({columns}) values ({placeholders})", payload)
+        cur.execute(statement, payload)
     return row_id
 
 
