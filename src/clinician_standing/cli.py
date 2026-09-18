@@ -36,6 +36,7 @@ from .connectors import CONNECTORS, RunResult, connector_keys, get_connector
 from .db import connect, fetch_all, missing_tables
 from .engine import run as run_obligations_engine
 from .evidence import EvidenceRequired
+from .refresh import refresh_stale
 
 __all__ = ["build_parser", "main"]
 
@@ -146,6 +147,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("status", help="last run per source and freshness compliance")
     sub.add_parser("init-check", help="verify the database is reachable and the schema present")
+
+    # refresh: re-ingest only the sources whose freshness has lapsed. The
+    # automatic half of SOURCE_STALE (PRD 8.3): run this before engine + classify
+    # so a stale source is re-fetched once before it reaches a human.
+    refresh = sub.add_parser("refresh", help="re-ingest sources whose freshness has lapsed")
+    refresh.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="report which sources are stale and run them fetch/parse/diff only",
+    )
 
     # engine: the obligations engine (PRD section 7). Nested subparser because
     # the engine will grow verbs -- `engine explain`, `engine replan <practice>`
@@ -310,6 +321,44 @@ def _run_ingest(connector_key: str | None, as_json: bool, dry_run: bool = False)
                 f"{row['source_key']:<20} {row['status']:<8} "
                 f"in={row['rows_in']:>9,} new={row['rows_new']:>9,} "
                 f"changed={row['rows_changed']:>9,} {row['seconds']}s"
+            )
+            if row["error"]:
+                print(f"  error: {row['error']}")
+    return EXIT_FAILED if failures else EXIT_OK
+
+
+# --------------------------------------------------------------------- refresh
+
+
+def _run_refresh(as_json: bool, dry_run: bool) -> int:
+    """Re-ingest stale sources and report what was refreshed.
+
+    Returns:
+        Process exit code. Non-zero when any refreshed source's run failed, so a
+        scheduler can tell a re-fetch that did not land from a quiet no-op.
+    """
+    results = refresh_stale(get_settings(), dry_run=dry_run)
+    records = [
+        {
+            "source_key": r.source_key,
+            "status": r.status,
+            "rows_new": r.rows_new,
+            "rows_changed": r.rows_changed,
+            "error": r.error.splitlines()[0] if r.error else None,
+        }
+        for r in results
+    ]
+    failures = [r for r in records if r["status"] not in {"ok", "dry-run"}]
+
+    if as_json:
+        print(json.dumps({"refreshed": records}, indent=2, default=str))
+    elif not records:
+        print("all sources are fresh; nothing to refresh")
+    else:
+        for row in records:
+            print(
+                f"{row['source_key']:<20} {row['status']:<8} "
+                f"new={row['rows_new']:>9,} changed={row['rows_changed']:>9,}"
             )
             if row["error"]:
                 print(f"  error: {row['error']}")
@@ -624,6 +673,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _run_ingest(selection, args.json, dry_run=args.dry_run)
         if args.command == "status":
             return _run_status(args.json)
+        if args.command == "refresh":
+            return _run_refresh(args.json, dry_run=args.dry_run)
         if args.command == "init-check":
             return _run_init_check(args.json)
         if args.command == "engine" and args.engine_command == "run":
