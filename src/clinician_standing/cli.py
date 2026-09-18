@@ -32,6 +32,7 @@ import psycopg
 
 from .audit import PracticeNotFound, audit_practice, render_html, render_json, render_markdown
 from .config import REQUIRED_TABLES, ConfigError, get_settings
+from .classifier import run as run_classifier_pass
 from .connectors import CONNECTORS, RunResult, connector_keys, get_connector
 from .db import connect, fetch_all, missing_tables
 from .engine import run as run_obligations_engine
@@ -171,6 +172,26 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=25,
         help="rows of the priority-ordered queue to print (default 25; 0 for none)",
+    )
+
+    # classify: the classifier (PRD section 8). Routes every pending obligation
+    # to auto_cleared, the action queue or the exception queue, and reports the
+    # auto-clear rate -- the single metric the margin rests on (PRD 1.1).
+    classify_p = sub.add_parser("classify", help="classify pending obligations (PRD section 8)")
+    classify_sub = classify_p.add_subparsers(dest="classify_command", required=True)
+    classify_run = classify_sub.add_parser(
+        "run", help="route every pending obligation and report the auto-clear rate"
+    )
+    classify_run.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="classify and report the outcome mix; write nothing",
+    )
+    classify_run.add_argument(
+        "--as-of",
+        metavar="YYYY-MM-DD",
+        default=None,
+        help="run date for freshness and window arithmetic (default: today, UTC)",
     )
 
     # audit: the free roster audit (PRD section 9). Read-only, and the only
@@ -536,6 +557,56 @@ def _run_engine(as_of_raw: str | None, as_json: bool, dry_run: bool, limit: int)
     return EXIT_OK
 
 
+# -------------------------------------------------------------------- classify
+
+
+def _run_classify(as_of_raw: str | None, as_json: bool, dry_run: bool) -> int:
+    """Classify pending obligations and print the outcome mix and auto-clear rate.
+
+    Args:
+        as_of_raw: ``YYYY-MM-DD`` run date, or None for today in UTC.
+        as_json: Emit JSON rather than a table.
+        dry_run: Classify and report; write nothing.
+
+    Returns:
+        Process exit code.
+    """
+    try:
+        as_of = date.fromisoformat(as_of_raw) if as_of_raw else None
+    except ValueError:
+        print(f"--as-of must be YYYY-MM-DD, got {as_of_raw!r}", file=sys.stderr)
+        return EXIT_CONFIG
+
+    settings = get_settings()
+    with connect(settings) as conn:
+        absent = missing_tables(conn, ("obligations", "exceptions", "evidence", "sources"))
+        if absent:
+            print(f"schema incomplete; missing tables: {', '.join(absent)}", file=sys.stderr)
+            return EXIT_CONFIG
+        result = run_classifier_pass(conn, as_of=as_of, dry_run=dry_run)
+        if not dry_run:
+            conn.commit()
+
+    summary = result.summary()
+    if as_json:
+        print(json.dumps(summary, indent=2, default=str))
+        return EXIT_OK
+
+    if dry_run:
+        print("DRY RUN -- nothing was written")
+    print(f"as of:         {summary['as_of']}")
+    rate = summary["auto_clear_rate"]
+    rate_text = "n/a" if rate is None else f"{rate:.1%}"
+    print(f"auto-clear:    {rate_text} of {summary['decided']} decided")
+    for outcome, count in summary["by_outcome"].items():
+        print(f"  {outcome:<14} {count:>6,}")
+    if summary["by_reason"]:
+        print("exceptions by reason:")
+        for reason, count in summary["by_reason"].items():
+            print(f"  {reason:<20} {count:>6,}")
+    return EXIT_OK
+
+
 # ---------------------------------------------------------------------- audit
 
 
@@ -627,6 +698,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _run_init_check(args.json)
         if args.command == "engine" and args.engine_command == "run":
             return _run_engine(args.as_of, args.json, args.dry_run, args.limit)
+        if args.command == "classify" and args.classify_command == "run":
+            return _run_classify(args.as_of, args.json, args.dry_run)
         if args.command == "audit":
             # The global --json flag predates --format; honour it as an alias
             # rather than making the two disagree silently.
