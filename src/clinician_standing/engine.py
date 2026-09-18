@@ -58,6 +58,7 @@ __all__ = [
     "SEVERITY_RANK",
     "TIER_RANK",
     "UPSERT_SQL",
+    "CLOSEABLE_ON_ROSTER_SHRINK",
     "EngineResult",
     "ObligationSpec",
     "Roster",
@@ -66,6 +67,7 @@ __all__ = [
     "compute_due_date",
     "load_roster",
     "month_end",
+    "obligations_to_close",
     "plan",
     "priority_key",
     "run",
@@ -1239,6 +1241,50 @@ where status in ('pending','queued','in_progress','exception')
   and deleted_at is null
 """
 
+_QUERY_OPEN_OBLIGATION_IDS = """
+select id, clinician_id, practice_id, obligation_type,
+       coalesce(state, ''), coalesce(payer, ''), status
+from obligations
+where status in ('pending','queued','in_progress','exception')
+  and deleted_at is null
+"""
+
+#: Open statuses an engine run may close when the roster no longer implies the
+#: duty. Deliberately only the UNSTARTED ones: an ``in_progress`` obligation is
+#: work a delivery associate has picked up, and an ``exception`` is a standing
+#: finding a QA specialist must resolve -- yanking either out from under a human
+#: loses context, so those are left for a person to close when they see the
+#: affiliation ended. A closed obligation is soft-deleted, never hard-deleted:
+#: the row stays for the audit trail (PRD 1.2).
+CLOSEABLE_ON_ROSTER_SHRINK: frozenset[str] = frozenset({"pending", "queued"})
+
+
+def obligations_to_close(
+    planned_keys: set[tuple[Any, ...]], open_rows: Sequence[Sequence[Any]]
+) -> list[UUID]:
+    """Return the ids of open obligations the roster no longer implies.
+
+    A duty is closed when its open-duty key is absent from this run's plan --
+    the affiliation ended, the licence was removed, the payer dropped -- and it
+    has not been started. Rows in :data:`CLOSEABLE_ON_ROSTER_SHRINK` only; an
+    in-progress or exception row is left for a human.
+
+    Args:
+        planned_keys: The set of ``ObligationSpec.key`` this run planned.
+        open_rows: ``(id, clinician_id, practice_id, obligation_type,
+            coalesce(state,''), coalesce(payer,''), status)`` for every open
+            obligation.
+
+    Returns:
+        The ids to soft-delete.
+    """
+    to_close: list[UUID] = []
+    for row in open_rows:
+        key = (row[1], row[2], row[3], str(row[4]).strip(), row[5])
+        if key not in planned_keys and row[6] in CLOSEABLE_ON_ROSTER_SHRINK:
+            to_close.append(row[0])
+    return to_close
+
 
 def load_roster(conn: psycopg.Connection, as_of: date) -> Roster:
     """Read every table the engine needs, in a handful of queries.
@@ -1348,6 +1394,8 @@ class EngineResult:
         updated: Open obligations whose date, window, severity or rule version
             moved. This is the rule-change path.
         unchanged: Open obligations the run confirmed and left alone.
+        closed: Open, unstarted obligations soft-deleted because the roster no
+            longer implies them (an affiliation ended, a licence was removed).
         by_type: Planned count per obligation type.
         by_severity: Planned count per severity.
     """
@@ -1358,6 +1406,7 @@ class EngineResult:
     inserted: int = 0
     updated: int = 0
     unchanged: int = 0
+    closed: int = 0
     by_type: dict[str, int] = field(default_factory=dict)
     by_severity: dict[str, int] = field(default_factory=dict)
 
@@ -1370,6 +1419,7 @@ class EngineResult:
             "inserted": self.inserted,
             "updated": self.updated,
             "unchanged": self.unchanged,
+            "closed": self.closed,
             "by_type": dict(sorted(self.by_type.items())),
             "by_severity": dict(sorted(self.by_severity.items())),
         }
@@ -1426,6 +1476,19 @@ def run(
                 result.inserted += 1
             else:
                 result.updated += 1
+
+        # Close what the roster no longer implies. Read AFTER the upserts, so
+        # every duty this run planned is already open and none is closed by
+        # mistake; a key that is still absent belongs to a departed affiliation.
+        planned_keys = {spec.key for spec in specs}
+        open_rows = fetch_all(conn, _QUERY_OPEN_OBLIGATION_IDS)
+        close_ids = obligations_to_close(planned_keys, open_rows)
+        if close_ids:
+            cur.execute(
+                "update obligations set deleted_at = %s where id = any(%s) and deleted_at is null",
+                (generated_at, close_ids),
+            )
+            result.closed = cur.rowcount if cur.rowcount and cur.rowcount > 0 else len(close_ids)
     LOGGER.info("engine run complete: %s", result.summary())
     return result
 
@@ -1450,6 +1513,11 @@ def _classify_dry_run(
             result.updated += 1
         else:
             result.unchanged += 1
+
+    # Would-close: open, unstarted duties this plan no longer implies.
+    planned_keys = {spec.key for spec in specs}
+    open_rows = fetch_all(conn, _QUERY_OPEN_OBLIGATION_IDS)
+    result.closed = len(obligations_to_close(planned_keys, open_rows))
 
 
 def run_engine(
