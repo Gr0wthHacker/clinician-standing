@@ -16,15 +16,15 @@ The seeds assume all migrations have already been applied, in order.
 for f in db/migrations/*.sql; do psql -v ON_ERROR_STOP=1 -d "$DB" -f "$f"; done
 
 # Order matters: conflicts reference requirements by FK.
-psql -v ON_ERROR_STOP=1 -d "$DB" -f db/seeds/requirements_seed.sql
-psql -v ON_ERROR_STOP=1 -d "$DB" -f db/seeds/requirement_conflicts_seed.sql
+psql -v ON_ERROR_STOP=1 -d "$DB" -f db/seeds/00_requirements_base.sql
+psql -v ON_ERROR_STOP=1 -d "$DB" -f db/seeds/20_conflicts_base.sql
 ```
 
 Both files are idempotent and transactional. Each deletes only the rows it owns
 (`verified_by = 'research-agent'` / `observed_by = 'research-agent'`, scoped to
-CA/FL/TX/NY and MD/APRN) and reinserts them. `requirements_seed.sql` also clears
+CA/FL/TX/NY and MD/APRN) and reinserts them. `00_requirements_base.sql` also clears
 the dependent `requirement_conflicts` rows first, which is why it must run
-first and `requirement_conflicts_seed.sql` must run after it — re-running the
+first and `20_conflicts_base.sql` must run after it — re-running the
 requirements file alone leaves the conflicts table empty until you re-run the
 conflicts file.
 
@@ -41,7 +41,7 @@ A wrong `renewal_cycle_months` produces a confidently wrong obligation calendar
 that a client acts on. That is worse than an empty cell, because an empty cell
 is visibly empty.
 
-Concretely, every row in `requirements_seed.sql`:
+Concretely, every row in `00_requirements_base.sql`:
 
 1. **Carries a citation to a primary source** — a state board page, a state
    statute, or a board rule. Third-party CE aggregators and summary sites were
@@ -55,7 +55,7 @@ Concretely, every row in `requirements_seed.sql`:
    state. Where a board is silent, the row is absent — silence is not a zero
    and is not a "no".
 
-Anything that failed any of those tests is in `requirement_conflicts_seed.sql`
+Anything that failed any of those tests is in `20_conflicts_base.sql`
 with `resolution = 'unresolved'`, which blocks auto-clear (PRD 8.1 condition 6)
 and raises `RULE_UNCERTAIN` (PRD 8.3). That is the designed behaviour for a
 value the system does not know, and it is why the conflicts file is a
