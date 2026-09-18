@@ -41,10 +41,73 @@ This is the rule that matters most.
   environment, and will be lost the next time the schema is rebuilt.
 - Migrations are forward-only and append-only. Do not edit a migration that has
   been applied anywhere; add the next number.
+- The one deliberate exception on record is `0009_seed_sources.sql`, whose
+  `ON CONFLICT DO UPDATE` refreshed `is_primary_source` from its own seed. That
+  made re-applying it — which `db/README.md` calls safe — silently revert the
+  correction in `0010`, which is the flag PRD 8.1 condition 1 reads. Two files
+  disagreeing about one value cannot be fixed by adding a third, so `0009` was
+  edited to state `0010`'s values and to stop rewriting the column on a re-run.
+  Both files were re-applied, in order and repeatedly, against a clean cluster
+  to confirm they now agree. Treat this as the bar for editing an applied
+  migration, not as a precedent.
 - If a Lovable screen needs a field that does not exist, the migration lands
   first and the UI is pointed at the new column afterwards.
 - Ingest and the UI must not both write the same column. Ingest owns anything
   derived from a source; the UI owns workflow state.
+
+## Dependencies and the lockfile
+
+`pyproject.toml` declares ranges, which is the right thing for a library and the
+wrong thing for a deployment: `pip install -e .` on the runner resolves whatever
+was published that morning, so two runs of the same commit can install different
+code. **There is no lockfile in this repository yet.** Generating one needs
+network access, so it could not be produced in the environment this was written
+in. Produce it once, from a clean checkout, and commit it:
+
+```bash
+# pip-tools (no extra runtime dependency, works with the existing pyproject)
+python3.11 -m pip install pip-tools
+pip-compile --generate-hashes --extra dev --extra s3 \
+            --output-file requirements.lock pyproject.toml
+
+# or, with uv
+uv pip compile --generate-hashes --extra dev --extra s3 \
+               -o requirements.lock pyproject.toml
+```
+
+`--generate-hashes` is the part that matters: without it the lockfile pins
+versions but not artifacts, and a re-uploaded or substituted wheel still
+installs. Once `requirements.lock` exists, change both workflows to
+
+```yaml
+python -m pip install --require-hashes -r requirements.lock
+python -m pip install -e . --no-deps
+```
+
+and regenerate it in the same commit as any change to `[project.dependencies]`
+or `[project.optional-dependencies]`.
+
+### Extras
+
+| Extra | Contents | When |
+|---|---|---|
+| `dev` | pytest, ruff, mypy | Always, locally and in CI |
+| `s3` | boto3, botocore | Whenever `STORAGE_PATH` is an `s3://` URI — which is the production setting, because raw evidence payloads are retained seven years |
+
+`evidence.py` imports boto3 lazily, inside the `s3://` branch. That is why it
+went undeclared for so long: nothing failed until a job actually set an `s3://`
+`STORAGE_PATH`, and then it failed after the download.
+
+### GitHub Actions are pinned by commit SHA
+
+Not by tag. A tag is a mutable pointer, and `ingest-monthly.yml` runs its steps
+with `DATABASE_URL` in the environment. Each `uses:` carries the SHA plus a
+trailing `# vX.Y.Z` comment; keep the comment in step with the SHA when you
+bump one:
+
+```bash
+gh api repos/actions/checkout/git/ref/tags/v4.2.2 --jq .object.sha
+```
 
 ## Before you open a pull request
 
@@ -57,6 +120,22 @@ make test       # pytest — no network, no database
 CI runs the same three. Tests must not require network access or a live
 database; mark anything that does with `@pytest.mark.network` or
 `@pytest.mark.database` and it will be deselected.
+
+**A test imports what it tests.** `tests/conftest.py` used to offer
+`try_import`/`require`, which turned a failed import into a skip so the suite
+could be written before the package existed. That is gone: a package that will
+not import must turn CI red, not quietly disable the tests that cover it. A skip
+is not a pass.
+
+The `database`-marked tests are real and worth running before a schema change.
+Against a throwaway cluster with every migration applied:
+
+```bash
+TEST_DATABASE_URL='postgresql://...' pytest -m database
+```
+
+`TEST_DATABASE_URL`, not `DATABASE_URL` — the latter is cleared before every
+test on purpose, so nothing can pass by picking up a real database by accident.
 
 ## Things that will not be merged
 

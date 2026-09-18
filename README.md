@@ -70,7 +70,7 @@ git clone <repo-url> clinician-standing
 cd clinician-standing
 
 make install                 # creates .venv and installs the package with dev tools
-cp .env.example .env         # then fill in DATABASE_URL and STORAGE_PATH
+cp .env.example .env         # then fill in the two database URLs and STORAGE_PATH
 make migrate                 # applies db/migrations via the supabase CLI
 make ingest                  # downloads, diffs and loads every enabled connector
 make status                  # last run, rows changed and freshness per source
@@ -218,6 +218,25 @@ session-level features that `COPY` and migrations need. Use the direct
 connection (port 5432) for `make migrate` and for bulk loads; the pooler is fine
 for short status queries.
 
+### 6. The ingest does not connect as the superuser
+
+`DATABASE_URL` names **`app_ingest`**, a login role created by
+`db/migrations/0011_ingest_role.sql` whose entire reach is membership in
+`app_internal`. It owns nothing, has no DDL rights and — the part that matters —
+has no `BYPASSRLS`, so the row-level security in `0008_rls.sql` actually applies
+to it. `0011` also sets `FORCE ROW LEVEL SECURITY` on all 16 tables, because
+plain `ENABLE` exempts the table owner.
+
+Before this split, `DATABASE_URL` was Supabase's `postgres` role: the owner of
+every table, with `BYPASSRLS`. The careful three-role model applied to nobody,
+and the one secret held by an unattended monthly job could read, rewrite or drop
+the entire database. The superuser URI is now `MIGRATION_DATABASE_URL`, used by
+a person running migrations and by nothing else.
+
+A superuser and any role with `BYPASSRLS` still bypass RLS — that is how
+Postgres works. Keeping that credential out of the ingest's environment is the
+control, not the policies.
+
 ---
 
 ## Compliance boundaries
@@ -240,7 +259,12 @@ Configured under **Settings → Secrets and variables → Actions**:
 
 | Secret | Required by | Notes |
 |---|---|---|
-| `DATABASE_URL` | `ingest-monthly.yml` | Supabase Postgres URI. Use the direct connection (port 5432) so `COPY` works. |
+| `DATABASE_URL` | `ingest-monthly.yml` | The **`app_ingest`** role's URI — not the superuser's. Direct connection (port 5432) so `COPY` works. Rotate with `alter role app_ingest password '<new>'`; it does not touch the superuser password. |
+
+**`MIGRATION_DATABASE_URL` is deliberately not a repository secret.** It is the
+superuser credential; no workflow needs it, and adding it would hand a scheduled
+unattended job the ability to drop the schema. Migrations are applied by a person
+with the Supabase CLI or `psql`. See `db/README.md`.
 
 `ci.yml` uses no secrets and reaches no network or database, by design.
 Future connectors will add `NURSYS_API_KEY` and `FSMB_API_KEY`; both are

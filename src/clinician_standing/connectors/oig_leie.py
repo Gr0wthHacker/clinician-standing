@@ -246,13 +246,17 @@ class OigLeieConnector(Connector):
     # 45 days, matching the seeded registry row. The registry is
     # authoritative and ensure_registered() adopts its value at run time;
     # this is only the value used against a database with no seed.
-    freshness_sla_days: ClassVar[int] = 45
-    # The registry (db/migrations/0009_seed_sources.sql) seeds this source with
-    # is_primary_source = false: PRD 5.5 says false means it cannot alone clear
-    # an obligation, and a federal bulk file is a directory extract, not a
-    # primary-source verification. The class attribute matches the seed so a
-    # fresh database and a seeded one behave identically.
-    is_primary_source: ClassVar[bool] = False
+    freshness_sla_days: int = 45
+    # Same rule as freshness_sla_days: 0009_seed_sources.sql seeds this flag,
+    # 0010_source_attestation.sql pairs it with attests_obligation_types, and
+    # ensure_registered() adopts the registry's value at run time.
+    #
+    # true. OIG publishes the LEIE and IS the authoritative record of exclusion
+    # from federal health care programs; 0010 corrected this from the seed's
+    # original false, which had made it impossible for the monthly
+    # exclusion_screen obligation to ever auto-clear. It attests to
+    # exclusion_screen and to nothing else.
+    is_primary_source: bool = True
     terms_url: ClassVar[str | None] = "https://oig.hhs.gov/exclusions/index.asp"
 
     def __init__(self, settings: Any | None = None) -> None:

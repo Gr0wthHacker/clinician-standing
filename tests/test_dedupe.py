@@ -11,11 +11,9 @@ pair and must not be part of the key.
 
 from __future__ import annotations
 
-import pytest
+from clinician_standing.transform import DAC_DEDUPE_KEY, dedupe
+from conftest import DAC_EXPECTED_PAIRS
 
-from conftest import DAC_EXPECTED_PAIRS, find_attr, require, try_import
-
-DEDUPE_MODULES = ("clinician_standing.transform", "clinician_standing.dedupe")
 DEDUPE_KEY = ("NPI", "org_pac_id")
 
 
@@ -64,34 +62,16 @@ def test_deduping_on_org_pac_id_alone_is_wrong(dac_rows):
 
 
 # --------------------------------------------------------------------------
-# The package's dedupe, once it exists.
+# The package's dedupe. Imported directly: a rename or a broken import fails
+# the suite, it does not skip it.
 # --------------------------------------------------------------------------
-def _dedupe():
-    for name in DEDUPE_MODULES:
-        fn = find_attr(
-            try_import(name), "dedupe", "dedupe_rows", "dedupe_dac", "collapse_locations"
-        )
-        if callable(fn):
-            return fn
-    return None
+def test_dedupe_key_is_the_pair():
+    """The declared key is the pair, not NPI alone and not the group alone."""
+    assert tuple(DAC_DEDUPE_KEY) == DEDUPE_KEY
 
 
-def _call_dedupe(fn, rows):
-    """Call the dedupe function under either signature: (rows) or (rows, key)."""
-    try:
-        return list(fn(rows, DEDUPE_KEY))
-    except TypeError:
-        return list(fn(rows))
-
-
-@require(DEDUPE_MODULES[0])
 def test_dedupe_collapses_duplicate_location_rows(dac_rows, expected_pairs):
-    fn = _dedupe()
-    if fn is None:
-        modules = " / ".join(DEDUPE_MODULES)
-        pytest.skip(f"awaiting a dedupe function in {modules}")
-
-    result = _call_dedupe(fn, dac_rows)
+    result = dedupe(dac_rows)
 
     assert len(result) == len(expected_pairs), (
         f"expected {len(expected_pairs)} rows after dedupe, got {len(result)}"
@@ -99,32 +79,27 @@ def test_dedupe_collapses_duplicate_location_rows(dac_rows, expected_pairs):
     assert _pairs(result) == expected_pairs
 
 
-@require(DEDUPE_MODULES[0])
 def test_dedupe_is_idempotent(dac_rows):
-    fn = _dedupe()
-    if fn is None:
-        pytest.skip("awaiting a dedupe function")
-
-    once = _call_dedupe(fn, dac_rows)
-    twice = _call_dedupe(fn, once)
+    once = dedupe(dac_rows)
+    twice = dedupe(once)
     assert _pairs(once) == _pairs(twice)
     assert len(once) == len(twice)
 
 
-@require(DEDUPE_MODULES[0])
 def test_dedupe_of_already_unique_rows_is_a_no_op(dac_rows):
-    fn = _dedupe()
-    if fn is None:
-        pytest.skip("awaiting a dedupe function")
-
-    unique = _call_dedupe(fn, dac_rows)
-    assert _pairs(_call_dedupe(fn, unique)) == _pairs(unique)
+    unique = dedupe(dac_rows)
+    assert _pairs(dedupe(unique)) == _pairs(unique)
 
 
-@require(DEDUPE_MODULES[0])
 def test_dedupe_handles_empty_input():
-    fn = _dedupe()
-    if fn is None:
-        pytest.skip("awaiting a dedupe function")
+    assert dedupe([]) == []
 
-    assert list(_call_dedupe(fn, [])) == []
+
+def test_dedupe_is_first_wins_and_order_preserving(dac_rows):
+    """First-wins keeps the output order stable, which keeps run-to-run diffs stable."""
+    result = dedupe(dac_rows)
+    assert [row["adr_ln_1"] for row in result] == [
+        "100 MAIN ST",  # first row of pair (1234567893, 0042000001)
+        "500 GROUP WAY",  # first row of pair (1234567893, 0042000002)
+        "100 MAIN ST",  # first row of pair (1987654320, 0042000001)
+    ]

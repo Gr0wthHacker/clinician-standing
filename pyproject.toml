@@ -25,13 +25,28 @@ dependencies = [
 # lets this run on a standard GitHub Actions runner.
 
 [project.optional-dependencies]
+# Object storage for raw evidence payloads. evidence.py imports boto3 and
+# botocore lazily, inside the `STORAGE_PATH is an s3:// URI` branch, and the
+# ingest-monthly workflow says that s3:// is the production setting -- so the
+# import is on the production path and was, until now, declared nowhere at all.
+# A job that set an s3:// STORAGE_PATH would have failed at the first
+# store_blob(), after the download, with "boto3 is not installed".
+#
+#   pip install -e ".[s3]"
+s3 = [
+  "boto3>=1.34,<2",
+  "botocore>=1.34,<2",
+]
+
 dev = [
   "pytest>=8.0,<9",
   "ruff>=0.5,<1",
   "mypy>=1.10,<2",
-  "types-requests>=2.31",      # stubs so mypy can see requests' signatures
-  "pandas-stubs>=2.1",         # stubs for the pandas call sites
 ]
+# types-requests and pandas-stubs used to be here. Both were stubs for packages
+# this project does not have and does not import -- see the note above about
+# requests and pandas -- so they added two supply-chain dependencies to every
+# CI run and every developer machine in exchange for nothing.
 
 [project.scripts]
 clinician-standing = "clinician_standing.cli:main"
@@ -98,15 +113,27 @@ disallow_incomplete_defs = true
 strict_equality = true
 exclude = ["^data/", "^storage/", "^\\.venv/"]
 
-# Tests may be loosely typed; the production path may not be.
+# Tests may be loosely typed; the production path may not be. `packages` above
+# limits a bare `mypy` run to clinician_standing, so this section only applies
+# when the tests are checked explicitly (`mypy tests`).
 [[tool.mypy.overrides]]
 module = "tests.*"
 disallow_untyped_defs = false
 check_untyped_defs = false
 
-# Third-party packages that ship no stubs.
+# Third-party packages that ship no stubs, or that are optional at runtime.
+#
+# psycopg 3 does ship py.typed, so when it is installed mypy uses its real
+# types and this override changes nothing. It is here for the environments
+# where the driver is absent -- a docs build, a lint-only container, a
+# contributor who has not run `make install` yet -- so that a missing optional
+# wheel produces no type errors rather than a wall of them that hides a real
+# one.
+#
+# boto3/botocore ship no stubs at all and are an optional extra (`.[s3]`), so
+# they are unresolvable by design in the default install.
 [[tool.mypy.overrides]]
-module = ["pandas.*"]
+module = ["psycopg.*", "boto3.*", "botocore.*"]
 ignore_missing_imports = true
 
 # --- pytest ----------------------------------------------------------------

@@ -1,5 +1,19 @@
 name: Monthly federal ingest
 
+# ACTIONS ARE PINNED BY COMMIT SHA, NOT BY TAG.
+# A tag is a mutable pointer: whoever can push to the action's repository can
+# move `v4` to any commit, and every workflow in the world that references `v4`
+# runs it on the next trigger. THIS workflow is the one that matters: its steps
+# run with DATABASE_URL in the environment, so a moved tag is a credential
+# disclosure, not just an unexpected build. Several supply-chain incidents have
+# worked exactly that way. A SHA is immutable, so an upgrade becomes a
+# reviewable diff instead of something that happens to you.
+#
+# To bump one, look the tag up and replace both the SHA and the comment:
+#   gh api repos/actions/checkout/git/ref/tags/v4.2.2 --jq .object.sha
+# Keep the trailing version comment: it is the only human-readable record of
+# which release a digest corresponds to.
+
 # =============================================================================
 # READ THIS BEFORE WONDERING WHY THE CRON NEVER FIRES
 #
@@ -86,7 +100,7 @@ jobs:
     timeout-minutes: 180
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 
       # ---------------------------------------------------------------------
       # Disk. A stock ubuntu-latest runner has a 14GB SSD with roughly 14GB
@@ -111,7 +125,7 @@ jobs:
           echo "::endgroup::"
 
       - name: Set up Python ${{ env.PYTHON_VERSION }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b  # v5.3.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
@@ -137,7 +151,7 @@ jobs:
       # retention. See the STORAGE_PATH comment above for the s3:// fix.
       # ---------------------------------------------------------------------
       - name: Restore connector diff state
-        uses: actions/cache@v4
+        uses: actions/cache@6849a6489940f00c2f30c0fb92c6274307ccb58a  # v4.1.2
         with:
           path: storage/state
           key: ingest-state-${{ github.run_id }}
@@ -184,7 +198,7 @@ jobs:
       # and they are re-downloadable from CMS anyway.
       - name: Upload diff summary
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882  # v4.4.3
         with:
           name: ingest-diff-${{ github.run_id }}
           path: |

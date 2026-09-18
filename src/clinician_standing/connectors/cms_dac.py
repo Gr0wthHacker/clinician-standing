@@ -17,7 +17,9 @@ Two things about this file decide whether downstream numbers are right:
    version stamp, so it is discovered from the metastore item rather than
    hardcoded.
 
-Populates ``practices``, ``clinicians`` and ``affiliations``.
+Populates ``practices``, ``clinicians`` and ``affiliations``, and closes
+affiliations that have left the file. The load stages the full current file,
+not the change set -- see :meth:`CmsDacConnector.load`.
 """
 
 from __future__ import annotations
@@ -148,6 +150,21 @@ create temporary table stg_cms_dac (
 
 # Only CMS-derived demographics are refreshed on conflict. client_status, tier,
 # size_discount and onboarded_at are owned by delivery, not by an ingest job.
+#
+# `distinct on (org_pac_id)` picks one of the practice's rows to describe it.
+# The file carries one row per clinician per LOCATION, so the candidates differ
+# in address, city, zip and phone -- the very columns this statement writes.
+# Two consequences, both of which the ORDER BY has to answer:
+#
+#   * it must see every row for the practice. Staged from a change set it sees
+#     whichever locations happened to change, so a practice's address would
+#     follow whichever of its clinicians CMS touched that month. load() stages
+#     the full current file.
+#   * num_org_mem is a property of the org, so it is equal across a practice's
+#     rows and decides nothing. Without a tiebreaker the winner is whatever the
+#     planner returns, which can differ between two runs over identical input.
+#     The address columns and npi are appended to make the choice total and
+#     therefore reproducible.
 _UPSERT_PRACTICES = """
 insert into practices (
     id, org_pac_id, legal_name, address_line1, address_line2, city, state, zip, phone
@@ -160,7 +177,8 @@ where s.org_pac_id is not null
   and s.org_pac_id <> ''
   and s.facility_name is not null
   and s.facility_name <> ''
-order by s.org_pac_id, s.num_org_mem desc nulls last
+order by s.org_pac_id, s.num_org_mem desc nulls last,
+         s.address_line1 nulls last, s.city nulls last, s.zip nulls last, s.npi
 on conflict (org_pac_id) do update set
     legal_name    = excluded.legal_name,
     address_line1 = excluded.address_line1,
@@ -182,7 +200,7 @@ select distinct on (s.npi)
     nullif(s.primary_specialty, '')
 from stg_cms_dac s
 where s.npi is not null and s.npi <> ''
-order by s.npi, s.num_org_mem desc nulls last
+order by s.npi, s.num_org_mem desc nulls last, s.org_pac_id nulls last
 on conflict (npi) do update set
     ind_pac_id        = coalesce(excluded.ind_pac_id, clinicians.ind_pac_id),
     ind_enrl_id       = coalesce(excluded.ind_enrl_id, clinicians.ind_enrl_id),
@@ -195,6 +213,21 @@ on conflict (npi) do update set
     primary_specialty = coalesce(excluded.primary_specialty, clinicians.primary_specialty)
 """
 
+# The (clinician, practice) pairs the current file asserts, and the clinicians
+# it covers at all. Both are needed to end an affiliation safely; see
+# _END_AFFILIATIONS.
+_CREATE_PAIRS = """
+create temporary table stg_dac_pairs on commit drop as
+select distinct npi, org_pac_id
+from stg_cms_dac
+where npi <> '' and org_pac_id is not null and org_pac_id <> ''
+"""
+
+_CREATE_NPIS = """
+create temporary table stg_dac_npis on commit drop as
+select distinct npi from stg_cms_dac where npi <> ''
+"""
+
 # The DAC file carries no start date, so affiliations.start_date stays null and
 # the natural unique key (clinician_id, practice_id, start_date) cannot be used
 # as a conflict target: in SQL, null never conflicts with null. An explicit
@@ -202,17 +235,56 @@ on conflict (npi) do update set
 _INSERT_AFFILIATIONS = """
 insert into affiliations (id, clinician_id, practice_id, is_billing)
 select gen_random_uuid(), c.id, p.id, true
-from (
-    select distinct npi, org_pac_id
-    from stg_cms_dac
-    where npi <> '' and org_pac_id is not null and org_pac_id <> ''
-) s
+from stg_dac_pairs s
 join clinicians c on c.npi = s.npi
 join practices  p on p.org_pac_id = s.org_pac_id
 where not exists (
     select 1 from affiliations a
     where a.clinician_id = c.id and a.practice_id = p.id and a.end_date is null
 )
+"""
+
+# CLOSING AFFILIATIONS THAT LEFT THE FILE.
+#
+# Insert-only was the bug. `affiliations.end_date is null` is the definition of
+# "active" for the nightly engine (0002_core.sql, PRD 7), and is_billing is true
+# on every row this connector writes, so an affiliation that is never closed
+# keeps generating obligations at critical severity for a clinician who left the
+# practice months ago. Nothing else in the system closes one: diff.removed_keys
+# holds truncated 64-bit hashes for reporting, which cannot be joined back to a
+# clinician or a practice.
+#
+# Three conditions, each load-bearing:
+#
+#   1. the pair is absent from the current file -- the actual signal;
+#   2. the clinician IS in the current file. Absence of the clinician altogether
+#      is ambiguous: retired, deregistered, or a change in what CMS publishes.
+#      Requiring their continued presence means this statement only ever acts on
+#      a move between practices, which is the case the file states unambiguously.
+#      The residual gap is deliberate and documented in load(): a clinician who
+#      vanishes from the file entirely keeps their affiliations open until a
+#      source that speaks to retirement closes them;
+#   3. start_date is null. That is the shape this connector creates -- the file
+#      carries no start date. It is a provenance proxy, and it keeps the
+#      statement off any affiliation entered by hand or by a future connector
+#      that does know a start date.
+#
+# end_date is current_date, not the file's date: CMS publishes an extract, not
+# an event, so the only honest claim is "not present as of this run".
+_END_AFFILIATIONS = """
+update affiliations a
+   set end_date = current_date
+  from clinicians c, practices p
+ where a.clinician_id = c.id
+   and a.practice_id = p.id
+   and a.end_date is null
+   and a.deleted_at is null
+   and a.start_date is null
+   and p.org_pac_id is not null
+   and exists (select 1 from stg_dac_npis n where n.npi = c.npi)
+   and not exists (
+       select 1 from stg_dac_pairs s
+        where s.npi = c.npi and s.org_pac_id = p.org_pac_id)
 """
 
 
@@ -252,13 +324,18 @@ class CmsDacConnector(Connector):
     cadence: ClassVar[str] = "monthly"
     # Published monthly with a stated next-update date; 45 days allows one late
     # publication before dependent assertions go stale.
-    freshness_sla_days: ClassVar[int] = 45
-    # The registry (db/migrations/0009_seed_sources.sql) seeds this source with
-    # is_primary_source = false: PRD 5.5 says false means it cannot alone clear
-    # an obligation, and a federal bulk file is a directory extract, not a
-    # primary-source verification. The class attribute matches the seed so a
-    # fresh database and a seeded one behave identically.
-    is_primary_source: ClassVar[bool] = False
+    freshness_sla_days: int = 45
+    # The registry is authoritative for this flag: 0009_seed_sources.sql seeds
+    # it and 0010_source_attestation.sql pairs it with
+    # attests_obligation_types. ensure_registered() adopts the registry's value
+    # at run time, exactly as it does for freshness_sla_days, so this
+    # declaration is only what a database with no row for cms_dac would get.
+    #
+    # false, and it is the one federal file that stays false: the DAC file is a
+    # monthly public directory extract, published on a lag. It describes the
+    # roster; it does not adjudicate standing, and 0010 gives it an empty
+    # attests_obligation_types to say so.
+    is_primary_source: bool = False
     terms_url: ClassVar[str | None] = "https://data.cms.gov/provider-data/terms-of-service"
 
     def __init__(self, settings: Any | None = None) -> None:
@@ -301,7 +378,11 @@ class CmsDacConnector(Connector):
                 self.log.info(
                     "DAC distribution: %s (dataset modified %s)", url, self.dataset_modified
                 )
-                return url
+                # str(), because `url` came out of a remote JSON document and is
+                # typed Any; require_allowed_url is what makes it trustworthy,
+                # and running it here means a bad URL is refused at discovery
+                # rather than at the first byte of an 839 MB download.
+                return self.require_allowed_url(str(url))
         raise ConnectorError(f"no CSV distribution found in the metastore item at {METADATA_URL}")
 
     def fetch(self) -> Path:
@@ -439,8 +520,35 @@ class CmsDacConnector(Connector):
         ~50k. ``match_keys`` records which identity keys this evidence can be
         joined on, which is what section 8.1 checks.
 
+        THE DIFF DECIDES WHETHER TO LOAD, NOT WHAT IS STAGED. This used to
+        populate ``stg_cms_dac`` from ``diff.iter_rows()`` -- the same shape as
+        the bugs already fixed in the LEIE and revalidation connectors -- and it
+        was wrong here too, in two ways:
+
+        * ``_UPSERT_PRACTICES`` and ``_UPSERT_CLINICIANS`` both reduce many rows
+          to one with ``distinct on``. Those rows differ in exactly the columns
+          being written (the file is one row per clinician per *location*), so
+          the reduction is only correct over all of a practice's rows. Over a
+          change set, a practice whose own details are unchanged but one of
+          whose clinicians moved would have its address rewritten to that one
+          clinician's location.
+        * an affiliation that disappears from the file has no row in the change
+          set at all, so nothing could ever close it. See ``_END_AFFILIATIONS``.
+
+        Both are fixed by staging the full current file, which is what the
+        revalidation connector already does.
+
+        WHAT IS STILL NOT CLOSED, deliberately: an affiliation whose clinician
+        has left the file entirely. Absence of a clinician is ambiguous --
+        retirement, deregistration, or a change in what CMS publishes -- and
+        guessing would end affiliations for a whole cohort the month CMS
+        narrows the file. The plausibility floor in ``Connector.run()`` guards
+        the gross case (a truncated file is refused before load), and the
+        narrow case waits for a source that actually speaks to retirement.
+
         Args:
-            diff: Change set from :meth:`diff`.
+            diff: Change set from :meth:`diff`; used to decide whether to load
+                and to report ``rows_new``/``rows_changed``.
         """
         if self.fetched_path is None or self.fetched_checksum is None:
             raise ConnectorError("load() called before fetch()")
@@ -471,35 +579,57 @@ class CmsDacConnector(Connector):
             )
             self.evidence_id = evidence_id
 
-            if not diff.has_changes:
-                self.log.info("no new or changed DAC rows; evidence recorded, nothing derived")
+            # rows_removed matters as much as has_changes: a month whose only
+            # movement is a clinician leaving a practice produces no new and no
+            # changed row, and skipping the load would leave that affiliation
+            # open forever.
+            if not diff.has_changes and not diff.rows_removed:
+                self.log.info("no DAC rows moved; evidence recorded, nothing derived")
                 return
 
             with conn.cursor() as cur:
                 cur.execute(_CREATE_STAGING)
 
+            # The full current file, re-parsed -- not diff.iter_rows(). See the
+            # docstring above and the comments on _UPSERT_PRACTICES and
+            # _END_AFFILIATIONS.
             staged = copy_from_csv(
                 conn,
                 "stg_cms_dac",
                 STAGING_COLUMNS,
-                (tuple(row[c] for c in STAGING_COLUMNS) for row in diff.iter_rows()),
+                (tuple(row[c] for c in STAGING_COLUMNS) for row in self.parse(self.fetched_path)),
                 batch_size=self.settings.copy_batch_size,
             )
-            self.log.info("staged %s changed DAC rows", f"{staged:,}")
+            self.log.info(
+                "staged %s DAC rows (new=%s changed=%s removed=%s this run)",
+                f"{staged:,}",
+                f"{diff.rows_new:,}",
+                f"{diff.rows_changed:,}",
+                f"{diff.rows_removed:,}",
+            )
 
             with conn.cursor() as cur:
                 cur.execute("create index on stg_cms_dac (npi)")
                 cur.execute("create index on stg_cms_dac (org_pac_id)")
                 cur.execute("analyze stg_cms_dac")
+                cur.execute(_CREATE_PAIRS)
+                cur.execute("create index on stg_dac_pairs (npi, org_pac_id)")
+                cur.execute(_CREATE_NPIS)
+                cur.execute("create index on stg_dac_npis (npi)")
+                cur.execute("analyze stg_dac_pairs")
+                cur.execute("analyze stg_dac_npis")
                 cur.execute(_UPSERT_PRACTICES)
                 practices = cur.rowcount
                 cur.execute(_UPSERT_CLINICIANS)
                 clinicians = cur.rowcount
                 cur.execute(_INSERT_AFFILIATIONS)
                 affiliations = cur.rowcount
+                cur.execute(_END_AFFILIATIONS)
+                ended = cur.rowcount
             self.log.info(
-                "practices upserted=%s clinicians upserted=%s affiliations inserted=%s",
+                "practices upserted=%s clinicians upserted=%s affiliations inserted=%s ended=%s",
                 practices,
                 clinicians,
                 affiliations,
+                ended,
             )

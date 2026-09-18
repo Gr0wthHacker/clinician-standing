@@ -62,10 +62,37 @@ references an object a later file creates.
 | `0007_indexes.sql` | Performance indexes, each commented with the query it serves | 7, 8, 10, 11 |
 | `0008_rls.sql` | Roles, grants, RLS policies | 12 |
 | `0009_seed_sources.sql` | Source registry seed | 6 |
+| `0010_source_attestation.sql` | `sources.attests_obligation_types`; corrects `is_primary_source` | 6, 8.1 |
+| `0011_ingest_role.sql` | `app_ingest` login role; `FORCE ROW LEVEL SECURITY` on all 16 tables | 12 |
+| `0012_enrollment_status_view.sql` | `enrollments_current` — enrollment status derived at read time | 7 |
 
 `evidence` is defined in `0002` rather than `0005` because the credential tables
 in `0003` carry a `NOT NULL` foreign key to it, and migrations may not reference
 forward. The table itself is exactly as PRD 5.4 specifies.
+
+`0009` and `0010` both set `sources.is_primary_source`. They now state one set
+of values: `0009` used to refresh the column from its own seed on conflict,
+which meant re-applying it — something this file calls safe — silently reverted
+`0010`'s correction and put `oig_leie` back to `false`. That is the flag PRD 8.1
+condition 1 reads, so every monthly `exclusion_screen` obligation stopped
+auto-clearing, with no error anywhere. Changing the flag for a source means
+changing its `attests_obligation_types` alongside it, in a new migration;
+`sources_primary_attests_chk` rejects a primary source that attests to nothing.
+
+### Derived values are not stored
+
+`0012` exists because `enrollments.status` was computed from
+`revalidation_due < current_date` at load time and stored. `current_date` moves;
+a stored answer does not, and the revalidation file only revisits a row when CMS
+changes it — so a due date that passed in a quiet month left the row reading
+`approved` indefinitely, which PRD 7 rates critical severity. Read
+`enrollments_current.status_current`, not `enrollments.status`.
+
+The general rule: anything whose value depends on today is computed when it is
+read. A stored generated column cannot do this (`current_date` is `STABLE`, not
+`IMMUTABLE`, and Postgres rejects it), so the mechanism is a view — created
+`WITH (security_invoker = true)` so the RLS policies on the base table still
+apply to whoever queries it.
 
 ### Enum-like columns
 
@@ -105,7 +132,7 @@ ln -s ../db/migrations supabase/migrations
 ```
 
 The CLI parses the leading digits of a filename as the version, so `0001…`
-through `0009…` sort and apply in the right order.
+through `0012…` sort and apply in the right order.
 
 ### Local development
 
@@ -135,11 +162,22 @@ supabase db push
 Every file is plain SQL and can be applied with `psql` in order:
 
 ```bash
-export DATABASE_URL='postgresql://postgres:<pw>@db.<ref>.supabase.co:5432/postgres'
+# MIGRATION_DATABASE_URL, not DATABASE_URL. Migrations need DDL rights and
+# therefore the superuser; the ingest's own credential (app_ingest) deliberately
+# has none. Keeping the two apart is what 0011_ingest_role.sql is for.
+export MIGRATION_DATABASE_URL='postgresql://postgres:<pw>@db.<ref>.supabase.co:5432/postgres'
 for f in db/migrations/0*.sql; do
   echo "== $f"
-  psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f" || exit 1
+  psql "$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f" || exit 1
 done
+```
+
+Applying `0011` creates `app_ingest` with **no password**, so it cannot yet
+authenticate. Set one once, out of band, and put it in the `DATABASE_URL`
+secret:
+
+```bash
+psql "$MIGRATION_DATABASE_URL" -c "alter role app_ingest password '<generated>'"
 ```
 
 Use this for a one-off environment or for CI. The CLI remains the path of record
@@ -147,7 +185,7 @@ because it tracks which migrations have run.
 
 ### Adding a migration
 
-1. New file, next number, descriptive name: `0010_add_<thing>.sql`.
+1. New file, next number, descriptive name: `0013_add_<thing>.sql`.
 2. Never edit an applied migration. Changing one that has already run on any
    environment guarantees drift.
 3. Make it re-runnable and forward-reference-free, like the others.
@@ -164,15 +202,27 @@ failure is loud, which is the point.
 
 | Role | Reach |
 |---|---|
-| `app_internal` | Everything. QA specialist, team lead, account lead, ingest jobs. |
+| `app_internal` | Everything. QA specialist, team lead, account lead, ingest jobs. `NOLOGIN` — it is assumed, never connected to. |
+| `app_ingest` | **The one role that logs in for a job.** Added by `0011`. Member of `app_internal` and nothing else: owns no object, no DDL, no `BYPASSRLS`. `DATABASE_URL` names this role. |
 | `app_delivery` | **Action queue only.** `obligations` with status `queued`/`in_progress`, plus the roster and credential rows for clinicians who have queued work. Column-level `UPDATE (status, completed_at)` — nothing else. **No grant at all** on `evidence`, `sanctions`, `requirements`, `requirement_conflicts`, `exceptions`, `sources`, `source_runs`. |
 | `app_client_portal` | **Read-only, own practice only.** Scoped by JWT claim. No `evidence`, no `sanctions`, no rules, no exceptions. |
 
 `app_delivery` implements PRD 12 directly: *"Offshore associates access the
 action queue only, never the evidence store or the rules admin."*
 
-Supabase's `service_role` has `BYPASSRLS` and is unaffected by any of this. Use
-it only from trusted server-side jobs. **Never ship it to a browser.**
+RLS is **enabled and FORCED** on all 16 tables. `ENABLE` alone exempts the table
+owner, which is exactly the connection the ingest used to run as; `FORCE`
+(`0011_ingest_role.sql`) removes that exemption, so a connection that happens to
+own a table is filtered by the same policies as everyone else. With
+`app_internal` holding `USING (true) WITH CHECK (true)` on every table, this
+costs a correctly configured job nothing and closes the hole for a
+misconfigured one.
+
+Supabase's `service_role` has `BYPASSRLS` and is unaffected by any of this, and
+so is a superuser — `FORCE` does not reach either. That is why the superuser URI
+must not be the ingest's credential: the control is *which role connects*, not
+the policies. Use `service_role` only from trusted server-side jobs. **Never
+ship it to a browser.**
 
 ### JWT claims the policies read
 

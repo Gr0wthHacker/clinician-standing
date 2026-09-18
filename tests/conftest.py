@@ -3,20 +3,26 @@
 Every test in this suite must run with no network and no database. Anything
 that needs either is marked `network` or `database` and deselected in CI.
 
-The ingest package itself is written by a separate workstream, so the tests
-here probe for it rather than assume it. `require(...)` returns a skip marker
-when a module or attribute is not there yet, which keeps CI green while the
-package lands and turns the test on automatically the moment it exists.
+THE PACKAGE IS IMPORTED DIRECTLY. This file used to carry `try_import`,
+`find_attr` and `require`, which turned a failed import into a pytest skip so
+that the suite could be written before the package existed. That scaffolding
+outlived its purpose and became a hazard: once `clinician_standing` shipped,
+any refactor that broke the package -- a renamed module, a syntax error, a
+circular import, a missing dependency -- turned every test that touched it into
+a skip, and CI stayed green while the thing under test was gone. A skip is not
+a pass. Tests import what they test; if the import fails, the suite fails.
+
+The one remaining conditional is the `database` marker, which is a genuine
+environment fact rather than a statement about whether the code exists.
 """
 
 from __future__ import annotations
 
 import csv
 import importlib
+import os
 from collections.abc import Iterator
 from pathlib import Path
-from types import ModuleType
-from typing import Any
 
 import pytest
 
@@ -38,42 +44,68 @@ MANAGED_ENV_VARS = (
 
 
 # --------------------------------------------------------------------------
-# Probing helpers
+# require() -- retained as a call-site shim, WITHOUT the skip.
+#
+# This used to return `pytest.mark.skip` when a module or attribute was
+# missing. Keeping the name but not the behaviour is deliberate: the import now
+# happens for real, so a package that will not import raises ImportError at
+# collection time and the suite goes red, and a missing attribute raises
+# AttributeError. Neither is a skip. New tests should import what they test
+# directly and not call this at all.
 # --------------------------------------------------------------------------
-def try_import(name: str) -> ModuleType | None:
-    """Import a module, returning None if it does not exist yet."""
-    try:
-        return importlib.import_module(name)
-    except ImportError:
-        return None
-
-
-def find_attr(module: ModuleType | None, *names: str) -> Any | None:
-    """Return the first attribute in `names` present on `module`, else None."""
-    if module is None:
-        return None
-    for name in names:
-        attr = getattr(module, name, None)
-        if attr is not None:
-            return attr
-    return None
-
-
 def require(module_name: str, *attrs: str) -> pytest.MarkDecorator:
-    """Skip marker for a module (and optionally an attribute) not yet written.
+    """Assert a module and its attributes exist, and return a no-op marker.
 
-    Usage::
-
-        @require("clinician_standing.config", "validate")
-        def test_something(): ...
+    Raises:
+        ImportError: If the module does not import. Not caught: a broken
+            package must fail the suite, not silently disable it.
+        AttributeError: If none of ``attrs`` is present on the module.
     """
-    module = try_import(module_name)
-    if module is None:
-        return pytest.mark.skip(reason=f"awaiting {module_name}")
-    if attrs and find_attr(module, *attrs) is None:
-        wanted = " or ".join(attrs)
-        return pytest.mark.skip(reason=f"awaiting {module_name}.{wanted}")
+    module = importlib.import_module(module_name)
+    if attrs and not any(hasattr(module, name) for name in attrs):
+        raise AttributeError(f"{module_name} has none of {attrs}")
     return pytest.mark.skipif(False, reason="module present")
+
+
+# --------------------------------------------------------------------------
+# Database-backed tests
+#
+# TEST_DATABASE_URL, not DATABASE_URL: the latter is cleared by clean_env for
+# every test, on purpose, so that nothing can pass by picking up a developer's
+# or a runner's real database by accident.
+# --------------------------------------------------------------------------
+def database_url() -> str | None:
+    """Connection URI for the `database`-marked tests, or None if unset."""
+    value = os.environ.get("TEST_DATABASE_URL", "").strip()
+    return value or None
+
+
+@pytest.fixture
+def db_connection() -> Iterator[object]:
+    """A live connection for a `database`-marked test, always rolled back.
+
+    Skips only when TEST_DATABASE_URL is unset -- an environment fact. A driver
+    that will not import or a database that will not accept the connection is an
+    error, not a skip.
+
+    The rollback is in a `finally` on purpose. A test that fails partway leaves
+    its rows behind otherwise, and the next run fails on a unique violation
+    instead of on the thing that actually broke -- which turns one red test into
+    a suite that stays red for the wrong reason.
+    """
+    url = database_url()
+    if url is None:
+        pytest.skip("TEST_DATABASE_URL is not set")
+    import psycopg
+
+    conn = psycopg.connect(url)
+    try:
+        yield conn
+    finally:
+        try:
+            conn.rollback()
+        finally:
+            conn.close()
 
 
 # --------------------------------------------------------------------------

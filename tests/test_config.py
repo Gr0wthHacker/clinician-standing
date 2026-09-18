@@ -9,69 +9,23 @@ from __future__ import annotations
 
 import pytest
 
-from conftest import find_attr, require, try_import
-
-CONFIG_MODULE = "clinician_standing.config"
+from clinician_standing.config import ConfigError, get_settings, reset_settings_cache
 
 
-def _validator():
-    """Return a zero-argument callable that validates the current environment.
+def validate() -> None:
+    """Validate the current environment through the package's own entry point.
 
-    The config module is written by a separate workstream, so probe for the
-    shapes it might reasonably take rather than pinning one.
+    Imported directly. The previous version of this file probed for one of
+    several possible shapes and skipped when it found none, which meant a
+    renamed `validate` silently stopped being tested.
     """
-    module = try_import(CONFIG_MODULE)
-    if module is None:
-        return None
-
-    # 1. A module-level validate() is the documented shape.
-    fn = find_attr(module, "validate", "validate_config")
-    if callable(fn):
-        return fn
-
-    # 2. A settings accessor that returns an object with .validate().
-    #    It is usually cached, so clear the cache before each read or the test
-    #    would validate whatever environment the first caller happened to see.
-    accessor = find_attr(module, "get_settings", "get_config", "load_settings")
-    if callable(accessor):
-        reset = find_attr(module, "reset_settings_cache", "reset_cache")
-
-        def _via_accessor():
-            if callable(reset):
-                reset()
-            try:
-                settings = accessor(refresh=True)
-            except TypeError:
-                settings = accessor()
-            validate = getattr(settings, "validate", None)
-            return validate() if callable(validate) else settings
-
-        return _via_accessor
-
-    # 3. A settings class constructed from the environment.
-    config_cls = find_attr(module, "Settings", "Config")
-    if config_cls is None:
-        return None
-    factory = find_attr(config_cls, "from_env", "load")
-    if not callable(factory):
-        return None
-
-    def _via_class():
-        settings = factory()
-        validate = getattr(settings, "validate", None)
-        return validate() if callable(validate) else settings
-
-    return _via_class
+    reset_settings_cache()
+    get_settings(refresh=True).validate()
 
 
-@require(CONFIG_MODULE)
 def test_validate_raises_when_database_url_missing():
     """No DATABASE_URL in the environment -> validation fails, and says so."""
-    validate = _validator()
-    if validate is None:
-        pytest.skip(f"awaiting a validate entry point in {CONFIG_MODULE}")
-
-    with pytest.raises(Exception) as excinfo:
+    with pytest.raises(ConfigError) as excinfo:
         validate()
 
     message = str(excinfo.value)
@@ -80,27 +34,17 @@ def test_validate_raises_when_database_url_missing():
     )
 
 
-@require(CONFIG_MODULE)
 def test_validate_passes_with_database_url_set(valid_env):
     """A complete environment validates without raising."""
-    validate = _validator()
-    if validate is None:
-        pytest.skip(f"awaiting a validate entry point in {CONFIG_MODULE}")
-
     validate()  # must not raise
 
 
-@require(CONFIG_MODULE)
 def test_validate_rejects_empty_database_url(monkeypatch):
     """An empty string is a misconfiguration, not a valid URL.
 
     This is the realistic failure in CI: a repository secret that was never set
     expands to the empty string rather than being absent.
     """
-    validate = _validator()
-    if validate is None:
-        pytest.skip(f"awaiting a validate entry point in {CONFIG_MODULE}")
-
     monkeypatch.setenv("DATABASE_URL", "")
-    with pytest.raises(Exception):  # noqa: B017
+    with pytest.raises(ConfigError):
         validate()

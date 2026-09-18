@@ -15,9 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import find_attr, require, try_import
-
-PARSE_MODULES = ("clinician_standing.parse", "clinician_standing.io")
+from clinician_standing.parse import LATIN1, UTF8_BOM, detect_encoding, read_csv
 
 
 # --------------------------------------------------------------------------
@@ -87,25 +85,32 @@ def test_utf8_sig_does_not_rescue_latin1(latin1_csv_bytes: bytes):
 
 
 # --------------------------------------------------------------------------
-# The package's own reader, once it exists.
+# The package's own reader. Imported directly: if clinician_standing.parse
+# stops exporting read_csv, this file fails rather than quietly skipping.
 # --------------------------------------------------------------------------
-def _reader():
-    for name in PARSE_MODULES:
-        fn = find_attr(try_import(name), "read_csv", "read_rows", "iter_rows", "open_csv")
-        if callable(fn):
-            return fn
-    return None
-
-
-@require(PARSE_MODULES[0])
 def test_package_reader_handles_latin1(latin1_csv_path: Path):
-    reader = _reader()
-    if reader is None:
-        modules = " / ".join(PARSE_MODULES)
-        pytest.skip(f"awaiting a CSV reader in {modules}")
+    rows = list(read_csv(latin1_csv_path, encoding=LATIN1))
+    assert len(rows) == 4
+    assert rows[1]["FIRSTNAME"] == "MARY\xa0JANE"
+    assert rows[2]["LASTNAME"] == "PE\xd1A"
 
-    rows = list(reader(latin1_csv_path))
-    assert rows, "reader returned nothing"
+
+def test_package_reader_detects_latin1_without_being_told(latin1_csv_path: Path):
+    """The 0xa0 byte must steer detection away from utf-8-sig."""
+    assert detect_encoding(latin1_csv_path) == LATIN1
+    rows = list(read_csv(latin1_csv_path))
+    assert rows[2]["LASTNAME"] == "PE\xd1A"
+
+
+def test_package_reader_keeps_utf8_bom_files_on_utf8(tmp_path: Path):
+    """The DAC file is utf-8 with a BOM; detection must not demote it to latin-1."""
+    path = tmp_path / "bom.csv"
+    path.write_bytes("NPI,name\n1234567893,JOS\u00e9\n".encode(UTF8_BOM))
+    assert detect_encoding(path) == UTF8_BOM
+    rows = list(read_csv(path))
+    # utf-8-sig strips the BOM, so the first header is "NPI" and not "\ufeffNPI".
+    assert rows[0]["NPI"] == "1234567893"
+    assert rows[0]["name"] == "JOS\u00e9"
 
 
 def test_stringio_roundtrip_is_encoding_independent():

@@ -19,6 +19,15 @@ Two gotchas:
   distribution, rather than hardcoding a path under ``/sites/default/files/<ym>/``.
 
 Populates ``enrollments`` with ``payer='medicare'`` and ``revalidation_due``.
+
+``enrollments.status`` is **not** computed from the due date here. A status
+derived from a date and "today" is stale the moment it is stored, and this file
+only revisits a row when CMS changes it, so a due date that passes in a quiet
+month would leave the row reading ``approved`` indefinitely. The connector
+writes the published due date; ``db/migrations/0012_enrollment_status_view.sql``
+adds ``enrollments_current``, which derives ``status_current`` from
+``revalidation_due`` against ``current_date`` every time it is read. Read the
+view, not ``enrollments.status``.
 """
 
 from __future__ import annotations
@@ -124,8 +133,9 @@ create temporary table stg_cms_revalidation (
 # mix a real date with TBD (which parses to NULL). Staged from a change set,
 # a month in which only the TBD row moved would leave the NULL as the pair's
 # only row, and _UPDATE_ENROLLMENTS would overwrite a genuine past-due date with
-# NULL and flip the status back to 'approved'. load() therefore stages the full
-# current file, never diff.iter_rows().
+# NULL -- erasing the only input the enrollments_current view has, so the
+# clinician would read as 'approved' while past due. load() therefore stages the
+# full current file, never diff.iter_rows().
 _CREATE_PAIRS = """
 create temporary table stg_reval_pairs on commit drop as
 select distinct on (individual_npi, group_pac_id)
@@ -137,21 +147,30 @@ where individual_npi is not null and individual_npi <> ''
 order by individual_npi, group_pac_id, individual_due_date nulls last
 """
 
-# Status is inferred, not published: this file states a due date, not an
-# enrollment decision. A due date in the past means the revalidation is overdue;
-# anything else is recorded as approved, which is what a live reassignment in
-# this file implies.
-_STATUS_EXPR = """
-case
-    when p.individual_due_date is not null and p.individual_due_date < current_date
-        then 'revalidation_due'
-    else 'approved'
-end
-"""
+# STATUS IS NOT DERIVED FROM A DATE HERE. See db/migrations/0012.
+#
+# These statements used to compute
+#
+#     case when p.individual_due_date < current_date then 'revalidation_due'
+#          else 'approved' end
+#
+# and store the answer. current_date moves; a stored answer does not, and this
+# file is monthly and only reaches a row when CMS changes something in it. A
+# clinician whose due date passed during a month in which CMS changed nothing
+# about their row kept status = 'approved' while being past due, and kept it
+# until CMS happened to touch the row again. PRD 7 rates a past-due Medicare
+# revalidation on a billing clinician critical severity.
+#
+# What this connector writes now is the fact CMS actually publishes: the due
+# date. `status` is written as 'approved', which is what a live reassignment of
+# billing rights in the current file asserts and is not a function of today's
+# date. Anything that has to know whether the revalidation is overdue reads the
+# `enrollments_current` view, which derives it at read time.
+_ENROLLMENT_STATUS = "'approved'"
 
 _UPDATE_ENROLLMENTS = f"""
 update enrollments e set
-    status           = {_STATUS_EXPR},
+    status           = {_ENROLLMENT_STATUS},
     revalidation_due = p.individual_due_date,
     evidence_id      = %(evidence_id)s,
     verified_at      = %(verified_at)s
@@ -169,7 +188,7 @@ insert into enrollments (
     evidence_id, verified_at
 )
 select
-    gen_random_uuid(), c.id, pr.id, 'medicare', {_STATUS_EXPR},
+    gen_random_uuid(), c.id, pr.id, 'medicare', {_ENROLLMENT_STATUS},
     p.individual_due_date, %(evidence_id)s, %(verified_at)s
 from stg_reval_pairs p
 join clinicians c on c.npi = p.individual_npi
@@ -217,13 +236,19 @@ class CmsRevalidationConnector(Connector):
     display_name: ClassVar[str] = "CMS Revalidation Clinic Group Practice Reassignment"
     kind: ClassVar[str] = "bulk_file"
     cadence: ClassVar[str] = "monthly"
-    freshness_sla_days: ClassVar[int] = 45
-    # The registry (db/migrations/0009_seed_sources.sql) seeds this source with
-    # is_primary_source = false: PRD 5.5 says false means it cannot alone clear
-    # an obligation, and a federal bulk file is a directory extract, not a
-    # primary-source verification. The class attribute matches the seed so a
-    # fresh database and a seeded one behave identically.
-    is_primary_source: ClassVar[bool] = False
+    freshness_sla_days: int = 45
+    # The registry is authoritative for this flag: 0009_seed_sources.sql seeds
+    # it and 0010_source_attestation.sql pairs it with
+    # attests_obligation_types. ensure_registered() adopts the registry's value
+    # at run time, exactly as it does for freshness_sla_days, so this
+    # declaration is only what a database with no row for cms_revalidation
+    # would get.
+    #
+    # true. CMS is the authority on Medicare enrollment and revalidation, so
+    # this file is a primary source for the medicare_revalidation obligation
+    # and for nothing else -- which is what 0010 records in
+    # attests_obligation_types. Free does not mean secondary.
+    is_primary_source: bool = True
     terms_url: ClassVar[str | None] = "https://data.cms.gov/about"
 
     def __init__(self, settings: Any | None = None) -> None:
@@ -287,7 +312,9 @@ class CmsRevalidationConnector(Connector):
         self.distribution_modified = modified or None
         self.distribution_title = title or None
         self.log.info("revalidation distribution: %s (modified %s)", url, modified)
-        return url
+        # Refused here rather than at the first byte of a 540 MB download: this
+        # URL is whatever data.json said, and data.json is a remote document.
+        return self.require_allowed_url(url)
 
     def fetch(self) -> Path:
         """Download the newest revalidation reassignment file.
@@ -395,6 +422,11 @@ class CmsRevalidationConnector(Connector):
         that ``stg_reval_pairs`` sees every row for an (NPI, group) pair -- see
         the comment above ``_CREATE_PAIRS`` for the data loss that follows from
         staging a change set instead.
+
+        Only the due date is written. ``status`` is set to ``approved``, the
+        fact a live reassignment asserts, and never to a comparison against
+        ``current_date``; the ``enrollments_current`` view derives that when it
+        is read. See the note above ``_ENROLLMENT_STATUS``.
 
         Args:
             diff: Change set from :meth:`diff`; used to decide whether to load

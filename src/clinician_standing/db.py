@@ -199,7 +199,8 @@ def fetch_all(
     """Run a query and return every row."""
     with conn.cursor() as cur:
         cur.execute(statement, params)
-        return cur.fetchall()
+        rows: list[tuple[Any, ...]] = cur.fetchall()
+        return rows
 
 
 def fetch_one(
@@ -208,7 +209,8 @@ def fetch_one(
     """Run a query and return the first row, or None."""
     with conn.cursor() as cur:
         cur.execute(statement, params)
-        return cur.fetchone()
+        row: tuple[Any, ...] | None = cur.fetchone()
+        return row
 
 
 def fetch_scalar(

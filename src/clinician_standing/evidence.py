@@ -129,8 +129,8 @@ def _s3_put(
 ) -> tuple[str, bool]:
     """Upload to S3. boto3 is imported lazily so local runs need no AWS SDK."""
     try:
-        import boto3  # type: ignore[import-not-found]
-        from botocore.exceptions import ClientError  # type: ignore[import-not-found]
+        import boto3
+        from botocore.exceptions import ClientError
     except ImportError as exc:  # pragma: no cover - depends on deployment extras
         raise EvidenceError("STORAGE_PATH is an s3:// URI but boto3 is not installed") from exc
 
@@ -176,8 +176,8 @@ def read_blob(relative_key: str, settings: Settings | None = None) -> bytes | No
     settings = settings or get_settings()
     if settings.storage_is_s3:
         try:
-            import boto3  # type: ignore[import-not-found]
-            from botocore.exceptions import ClientError  # type: ignore[import-not-found]
+            import boto3
+            from botocore.exceptions import ClientError
         except ImportError as exc:  # pragma: no cover
             raise EvidenceError("STORAGE_PATH is an s3:// URI but boto3 is not installed") from exc
         prefix = f"{settings.s3_prefix}/" if settings.s3_prefix else ""
@@ -196,7 +196,10 @@ def read_blob(relative_key: str, settings: Settings | None = None) -> bytes | No
             raise EvidenceError(
                 f"S3 get_object failed for s3://{settings.s3_bucket}/{object_key}: {exc}"
             ) from exc
-        return response["Body"].read()
+        # boto3 is untyped, so the read() is Any. Bind it to the declared
+        # return type here rather than letting Any escape the function.
+        body: bytes = response["Body"].read()
+        return body
 
     target = settings.local_storage_root / relative_key
     if not target.is_file():

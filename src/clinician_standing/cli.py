@@ -1,6 +1,6 @@
 """Command line interface: ``python -m clinician_standing``.
 
-Three subcommands, each one thing a scheduler or an engineer needs:
+Five subcommands, each one thing a scheduler or an engineer needs:
 
 * ``ingest <connector_key|all>`` (or ``ingest --all`` / ``ingest --sources a,b``)
   runs connectors and writes ``source_runs``. ``--dry-run`` stops after the
@@ -10,6 +10,11 @@ Three subcommands, each one thing a scheduler or an engineer needs:
   "source freshness compliance >= 99%" metric (section 11).
 * ``init-check`` verifies the database is reachable and the schema is present,
   so a scheduled job fails in one second rather than after a 839 MB download.
+* ``engine run`` regenerates the obligation calendar (PRD section 7). Runs
+  nightly and on any roster or rule change. ``--dry-run`` reports what it would
+  emit without writing.
+* ``audit <org_pac_id>`` generates the free roster audit (PRD section 9) from
+  data already ingested. Reads only; writes nothing.
 """
 
 from __future__ import annotations
@@ -19,14 +24,17 @@ import json
 import logging
 import sys
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from pathlib import Path
 from typing import Any
 
 import psycopg
 
+from .audit import PracticeNotFound, audit_practice, render_html, render_json, render_markdown
 from .config import REQUIRED_TABLES, ConfigError, get_settings
 from .connectors import CONNECTORS, RunResult, connector_keys, get_connector
 from .db import connect, fetch_all, missing_tables
+from .engine import run as run_obligations_engine
 from .evidence import EvidenceRequired
 
 __all__ = ["build_parser", "main"]
@@ -138,6 +146,60 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("status", help="last run per source and freshness compliance")
     sub.add_parser("init-check", help="verify the database is reachable and the schema present")
+
+    # engine: the obligations engine (PRD section 7). Nested subparser because
+    # the engine will grow verbs -- `engine explain`, `engine replan <practice>`
+    # -- and `engine run` should not have to be renamed when it does.
+    engine = sub.add_parser("engine", help="the obligations engine (PRD section 7)")
+    engine_sub = engine.add_subparsers(dest="engine_command", required=True)
+    engine_run = engine_sub.add_parser(
+        "run", help="regenerate the obligation calendar for every active affiliation"
+    )
+    engine_run.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="plan and report what would be emitted; write nothing",
+    )
+    engine_run.add_argument(
+        "--as-of",
+        metavar="YYYY-MM-DD",
+        default=None,
+        help="run date used for due-date and severity arithmetic (default: today, UTC)",
+    )
+    engine_run.add_argument(
+        "--limit",
+        type=int,
+        default=25,
+        help="rows of the priority-ordered queue to print (default 25; 0 for none)",
+    )
+
+    # audit: the free roster audit (PRD section 9). Read-only, and the only
+    # input is a group PAC ID, because the point of the artifact is that a
+    # prospect supplies nothing.
+    audit = sub.add_parser(
+        "audit", help="generate the free roster audit for one practice (PRD section 9)"
+    )
+    audit.add_argument("org_pac_id", metavar="org_pac_id", help="CMS group PAC ID")
+    audit.add_argument(
+        "--format",
+        dest="output_format",
+        choices=("json", "markdown", "html"),
+        default="markdown",
+        help="output format (default markdown). --json is an alias for --format json.",
+    )
+    audit.add_argument(
+        "--as-of",
+        metavar="YYYY-MM-DD",
+        default=None,
+        help="date the due-date arithmetic is computed against (default: today, UTC)",
+    )
+    audit.add_argument(
+        "-o",
+        "--output",
+        metavar="PATH",
+        default=None,
+        help="write to PATH instead of stdout",
+    )
     return parser
 
 
@@ -390,6 +452,146 @@ def _run_init_check(as_json: bool) -> int:
     return EXIT_OK if healthy else EXIT_FAILED
 
 
+# ----------------------------------------------------------------------- engine
+
+
+def _run_engine(as_of_raw: str | None, as_json: bool, dry_run: bool, limit: int) -> int:
+    """Regenerate the obligation calendar (PRD section 7).
+
+    Args:
+        as_of_raw: ``YYYY-MM-DD`` run date, or None for today in UTC.
+        as_json: Emit JSON rather than a table.
+        dry_run: Plan and report; write nothing.
+        limit: How many priority-ordered rows to print.
+
+    Returns:
+        Process exit code.
+    """
+    try:
+        as_of = date.fromisoformat(as_of_raw) if as_of_raw else None
+    except ValueError:
+        print(f"--as-of must be YYYY-MM-DD, got {as_of_raw!r}", file=sys.stderr)
+        return EXIT_CONFIG
+
+    settings = get_settings()
+    with connect(settings) as conn:
+        absent = missing_tables(conn, ("obligations", "requirements", "affiliations", "licenses"))
+        if absent:
+            print(f"schema incomplete; missing tables: {', '.join(absent)}", file=sys.stderr)
+            return EXIT_CONFIG
+        result = run_obligations_engine(conn, as_of=as_of, dry_run=dry_run)
+        if not dry_run:
+            conn.commit()
+
+    summary = result.summary()
+    if as_json:
+        summary["queue"] = [
+            {
+                "clinician_id": str(spec.clinician_id),
+                "practice_id": str(spec.practice_id),
+                "obligation_type": spec.obligation_type,
+                "state": spec.state,
+                "payer": spec.payer,
+                "due_date": spec.due_date.isoformat(),
+                "window_opens": spec.window_opens.isoformat() if spec.window_opens else None,
+                "severity": spec.severity,
+                "rule_version": spec.rule_version,
+                "reason": spec.reason,
+            }
+            for spec in (result.planned[:limit] if limit else [])
+        ]
+        print(json.dumps(summary, indent=2, default=str))
+        return EXIT_OK
+
+    if dry_run:
+        print("DRY RUN -- nothing was written")
+    print(f"as of:         {summary['as_of']}")
+    print(
+        f"planned:       {summary['planned']}  "
+        f"({'would insert' if dry_run else 'inserted'} {summary['inserted']}, "
+        f"{'would update' if dry_run else 'updated'} {summary['updated']}, "
+        f"unchanged {summary['unchanged']})"
+    )
+    for obligation_type, count in summary["by_type"].items():
+        print(f"  {obligation_type:<26} {count:>6,}")
+    print(
+        "severity:      "
+        + "  ".join(f"{name}={count:,}" for name, count in summary["by_severity"].items())
+    )
+    if limit:
+        print()
+        header = (
+            f"{'severity':<9} {'due':<11} {'type':<24} {'st':<3} {'payer':<10} {'ver':>3}  reason"
+        )
+        print(header)
+        print("-" * len(header))
+        for spec in result.planned[:limit]:
+            print(
+                f"{spec.severity:<9} {spec.due_date.isoformat():<11} "
+                f"{spec.obligation_type:<24} {(spec.state or '-'):<3} "
+                f"{(spec.payer or '-'):<10} "
+                f"{(spec.rule_version if spec.rule_version is not None else '-'):>3}  "
+                f"{spec.reason}"
+            )
+    return EXIT_OK
+
+
+# ---------------------------------------------------------------------- audit
+
+
+def _run_audit(
+    org_pac_id: str,
+    output_format: str,
+    as_of: str | None,
+    output_path: str | None,
+) -> int:
+    """Generate the free roster audit for one practice and write it out.
+
+    Args:
+        org_pac_id: CMS group PAC ID.
+        output_format: ``json``, ``markdown`` or ``html``.
+        as_of: Optional ``YYYY-MM-DD`` the due-date arithmetic runs against.
+        output_path: File to write, or None for stdout.
+
+    Returns:
+        Process exit code. ``EXIT_FAILED`` when the practice is not in the
+        database, because an audit of a practice that was never ingested is a
+        failed run, not an empty one.
+    """
+    try:
+        effective = date.fromisoformat(as_of) if as_of else None
+    except ValueError:
+        print(f"--as-of must be YYYY-MM-DD, got {as_of!r}", file=sys.stderr)
+        return EXIT_CONFIG
+
+    try:
+        result = audit_practice(org_pac_id, as_of=effective)
+    except PracticeNotFound as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_FAILED
+
+    renderer = {
+        "json": render_json,
+        "markdown": render_markdown,
+        "html": render_html,
+    }[output_format]
+    document = renderer(result)
+
+    if output_path:
+        Path(output_path).write_text(document, encoding="utf-8")
+        LOGGER.info(
+            "wrote %s audit for %s to %s (%s findings, worst: %s)",
+            output_format,
+            org_pac_id,
+            output_path,
+            len(result.findings),
+            result.worst_severity.value,
+        )
+    else:
+        print(document)
+    return EXIT_OK
+
+
 # ----------------------------------------------------------------------- main
 
 
@@ -423,6 +625,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _run_status(args.json)
         if args.command == "init-check":
             return _run_init_check(args.json)
+        if args.command == "engine" and args.engine_command == "run":
+            return _run_engine(args.as_of, args.json, args.dry_run, args.limit)
+        if args.command == "audit":
+            # The global --json flag predates --format; honour it as an alias
+            # rather than making the two disagree silently.
+            fmt = "json" if args.json else args.output_format
+            return _run_audit(args.org_pac_id, fmt, args.as_of, args.output)
     except (psycopg.Error, ConfigError, EvidenceRequired) as exc:
         LOGGER.error("%s: %s", type(exc).__name__, exc)
         return EXIT_FAILED
