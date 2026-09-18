@@ -46,9 +46,9 @@ on:
   workflow_dispatch:
     inputs:
       sources:
-        description: "Comma-separated source keys, or 'all'"
+        description: "Comma-separated federal source keys (nursys runs elsewhere)"
         required: false
-        default: "all"
+        default: "cms_dac,cms_revalidation,oig_leie"
       dry_run:
         description: "Download and diff but do not write to the database"
         type: boolean
@@ -170,12 +170,18 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           LOG_LEVEL: INFO
-          INGEST_SOURCES: ${{ github.event.inputs.sources || 'all' }}
+          # Federal sources only. This workflow is the monthly cron for the CMS
+          # and OIG bulk files; it carries DATABASE_URL and uploads its log as an
+          # artifact. Nursys is a push-cadence source whose API password lives in
+          # its own secret store, so it runs from its own workflow, never here --
+          # keeping those credentials out of this workflow's environment and out
+          # of the uploaded log. `all` is intentionally NOT the default.
+          INGEST_SOURCES: ${{ github.event.inputs.sources || 'cms_dac,cms_revalidation,oig_leie' }}
         run: |
           set -o pipefail
-          ARGS="--all"
-          if [ "${INGEST_SOURCES}" != "all" ] && [ -n "${INGEST_SOURCES}" ]; then
-            ARGS="--sources ${INGEST_SOURCES}"
+          ARGS="--sources ${INGEST_SOURCES}"
+          if [ "${INGEST_SOURCES}" = "all" ] || [ -z "${INGEST_SOURCES}" ]; then
+            ARGS="--all"
           fi
           if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
             ARGS="$ARGS --dry-run"
@@ -192,6 +198,38 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: clinician-standing status | tee "$STORAGE_PATH/status.txt"
+
+      # Scrub any secret value from the files about to be uploaded. GitHub masks
+      # secrets in the LIVE log, but `tee` captured the raw stream to disk and the
+      # artifact is retained 90 days and readable by anyone with repo access.
+      # Nothing here is expected to print DATABASE_URL -- psycopg does not log the
+      # URL -- but a stack trace or a future change could, so the artifact is
+      # scrubbed of the exact secret rather than trusted not to contain it.
+      - name: Redact secrets from artifacts
+        if: ${{ !cancelled() }}
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          python - <<'PY'
+          import glob
+          import os
+
+          secret = os.environ.get("DATABASE_URL", "")
+          if not secret:
+              raise SystemExit(0)
+          for name in glob.glob("storage/**", recursive=True):
+              if not os.path.isfile(name):
+                  continue
+              try:
+                  with open(name, encoding="utf-8", errors="replace") as fh:
+                      text = fh.read()
+              except OSError:
+                  continue
+              if secret in text:
+                  with open(name, "w", encoding="utf-8") as fh:
+                      fh.write(text.replace(secret, "[REDACTED_DATABASE_URL]"))
+                  print(f"redacted a secret from {name}")
+          PY
 
       # Upload the small artifacts only. The 839MB source files stay on the
       # runner and die with it; retaining them would blow through storage quota
