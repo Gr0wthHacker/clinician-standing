@@ -58,6 +58,7 @@ __all__ = [
     "SEVERITY_RANK",
     "TIER_RANK",
     "UPSERT_SQL",
+    "AnchorRule",
     "EngineResult",
     "ObligationSpec",
     "Roster",
@@ -66,8 +67,11 @@ __all__ = [
     "compute_due_date",
     "load_roster",
     "month_end",
+    "next_fixed_occurrence",
+    "parse_anchor",
     "plan",
     "priority_key",
+    "resolve_anchor",
     "run",
     "run_engine",
     "severity_for",
@@ -149,10 +153,10 @@ DEFAULTS: Mapping[str, int] = {
 #: version if they are newer, so bumping either the cycle or its window is a
 #: traceable change to the duty.
 DUTY_FIELD_KEYS: Mapping[str, tuple[str, ...]] = {
-    "license_renewal": ("renewal_cycle_months", "renewal_window_days"),
-    "csr_renewal": ("csr_required", "csr_cycle_months", "csr_window_days"),
+    "license_renewal": ("renewal_cycle_months", "renewal_window_days", "renewal_anchor"),
+    "csr_renewal": ("csr_required", "csr_cycle_months", "csr_window_days", "csr_anchor"),
     "dea_renewal": ("dea_required", "dea_cycle_months", "dea_window_days"),
-    "ce_cycle": ("ce_hours_total", "ce_cycle_months", "ce_window_days"),
+    "ce_cycle": ("ce_hours_total", "ce_cycle_months", "ce_window_days", "ce_anchor"),
     "medicare_revalidation": ("revalidation_cycle_months", "revalidation_window_days"),
     "payer_revalidation": ("revalidation_cycle_months", "revalidation_window_days"),
     "privilege_reappointment": ("privilege_cycle_months", "privilege_window_days"),
@@ -197,6 +201,177 @@ def add_months(value: date, months: int) -> date:
 
 
 # ===========================================================================
+# Anchors -- where a clock starts, when it is not the credential's own date.
+#
+# By default the engine anchors a duty to the date the credential carries: a
+# licence expiry, a CSR expiry, a CE cycle end. That is right for most states,
+# and wrong for the ones whose clock runs on a schedule of its own:
+#
+#   * Connecticut's controlled-substance registration renews on 28 February of
+#     odd years, not on the licence's anniversary. A ``fixed`` anchor.
+#   * Delaware and Rhode Island run the CSR clock offset from the licence issue.
+#     An ``issue`` anchor with ``offset_months``.
+#   * A dozen states run the CE cycle off the renewal cycle; anchoring CE to the
+#     licence expiry there is wrong even when the cycle LENGTH is right.
+#
+# An anchor is stored as a ``value_json`` requirement under a ``*_anchor``
+# field_key (``renewal_anchor``, ``csr_anchor``, ``ce_anchor``), so it carries a
+# citation and a version like every other rule and needs no new table. It is
+# INERT until authored: with no anchor rule loaded, resolve_anchor returns the
+# credential's own date and the calendar is exactly what it was.
+# ===========================================================================
+
+#: Where an anchor's clock starts.
+VALID_ANCHOR_BASES: frozenset[str] = frozenset({"credential", "issue", "license_expiry", "fixed"})
+
+#: Which years a ``fixed`` anchor lands on.
+VALID_ANCHOR_PARITY: frozenset[str] = frozenset({"annual", "odd", "even"})
+
+
+@dataclass(frozen=True)
+class AnchorRule:
+    """How to find the date a clock is anchored to.
+
+    Attributes:
+        basis: ``credential`` (the credential's own date, the default behaviour),
+            ``issue`` (the licence issue date), ``license_expiry`` (the licence
+            expiry) or ``fixed`` (a recurring calendar date).
+        offset_months: Whole months added to the basis date. Delaware and Rhode
+            Island CSR use this against ``issue``.
+        month: For ``fixed``, the anchor month (1-12).
+        day: For ``fixed``, the anchor day of month.
+        parity: For ``fixed``, which years it lands on -- ``annual`` every year,
+            ``odd``/``even`` every other year. Connecticut CSR is 28 Feb, odd.
+    """
+
+    basis: str
+    offset_months: int = 0
+    month: int | None = None
+    day: int | None = None
+    parity: str = "annual"
+
+
+def _valid_month_day(month: Any, day: Any) -> bool:
+    """True when ``month`` and ``day`` name a plausible calendar day."""
+    try:
+        return 1 <= int(month) <= 12 and 1 <= int(day) <= 31
+    except (TypeError, ValueError):
+        return False
+
+
+def parse_anchor(value: Any) -> AnchorRule | None:
+    """Parse a ``*_anchor`` requirement's ``value_json`` into an :class:`AnchorRule`.
+
+    Lenient by design: a malformed anchor returns None and is logged rather than
+    raising, so one bad rule row falls back to the credential's date instead of
+    taking the whole nightly run down. ``month_day`` (``"02-28"``) is accepted as
+    a shorthand for ``month`` and ``day``.
+
+    Returns:
+        An :class:`AnchorRule`, or None when the value is absent or unusable.
+    """
+    if not isinstance(value, Mapping):
+        return None
+    basis = str(value.get("basis", "")).strip().lower()
+    if basis not in VALID_ANCHOR_BASES:
+        LOGGER.warning("ignoring anchor with unknown basis %r", value.get("basis"))
+        return None
+    parity = str(value.get("parity", "annual")).strip().lower()
+    if parity not in VALID_ANCHOR_PARITY:
+        parity = "annual"
+    month, day = value.get("month"), value.get("day")
+    if (month is None or day is None) and value.get("month_day"):
+        try:
+            month_str, day_str = str(value["month_day"]).split("-")[:2]
+            month, day = int(month_str), int(day_str)
+        except (TypeError, ValueError):
+            month, day = None, None
+    try:
+        offset = int(value.get("offset_months", 0) or 0)
+    except (TypeError, ValueError):
+        offset = 0
+    if basis == "fixed" and not _valid_month_day(month, day):
+        LOGGER.warning("ignoring fixed anchor without a valid month/day: %r", value)
+        return None
+    return AnchorRule(
+        basis=basis,
+        offset_months=offset,
+        month=int(month) if month is not None else None,
+        day=int(day) if day is not None else None,
+        parity=parity,
+    )
+
+
+def next_fixed_occurrence(month: int, day: int, parity: str, as_of: date) -> date:
+    """Return the next occurrence of ``month``/``day`` on or after ``as_of``.
+
+    ``parity`` restricts the year: ``odd``/``even`` land only on odd/even years,
+    which is how a biennial "28 Feb of odd years" schedule is expressed. The day
+    is clamped to the month's length so 29 Feb never raises.
+
+    Args:
+        month: Anchor month (1-12).
+        day: Anchor day of month.
+        parity: ``annual`` | ``odd`` | ``even``.
+        as_of: The run date.
+
+    Returns:
+        The next scheduled date, on or after ``as_of``.
+    """
+    year = as_of.year
+    for _ in range(16):  # bounded: at most a few years for any parity
+        if (parity == "odd" and year % 2 == 0) or (parity == "even" and year % 2 == 1):
+            year += 1
+            continue
+        candidate = date(year, month, min(day, calendar.monthrange(year, month)[1]))
+        if candidate >= as_of:
+            return candidate
+        year += 1
+    return date(year, month, min(day, calendar.monthrange(year, month)[1]))
+
+
+def resolve_anchor(
+    rule: AnchorRule | None,
+    *,
+    credential_anchor: date | None,
+    issue_date: date | None,
+    expiry_date: date | None,
+    as_of: date,
+) -> date | None:
+    """Resolve the date a clock is anchored to.
+
+    With no rule, or a ``credential`` basis, the credential's own date is used --
+    the engine's default behaviour, unchanged. Otherwise the basis picks the
+    licence issue date, the licence expiry, or a fixed calendar date, and
+    ``offset_months`` shifts it. A basis whose source date is missing falls back
+    to the credential date rather than inventing one.
+
+    Args:
+        rule: The anchor rule, or None.
+        credential_anchor: The date the credential carries, or None.
+        issue_date: The licence issue date, for the ``issue`` basis.
+        expiry_date: The licence expiry, for the ``license_expiry`` basis.
+        as_of: The run date, for the ``fixed`` basis.
+
+    Returns:
+        The resolved anchor date, or None when nothing supplies one.
+    """
+    if rule is None or rule.basis == "credential":
+        return credential_anchor
+    if rule.basis == "issue":
+        base = issue_date
+    elif rule.basis == "license_expiry":
+        base = expiry_date
+    elif rule.basis == "fixed" and rule.month is not None and rule.day is not None:
+        base = next_fixed_occurrence(rule.month, rule.day, rule.parity, as_of)
+    else:  # pragma: no cover - parse_anchor rejects any other basis
+        return credential_anchor
+    if base is None:
+        return credential_anchor
+    return add_months(base, rule.offset_months) if rule.offset_months else base
+
+
+# ===========================================================================
 # Rules plane
 # ===========================================================================
 @dataclass(frozen=True)
@@ -210,6 +385,9 @@ class Rule:
     value_bool: bool | None
     value_text: str | None
     version: int
+    # Last field, defaulted: the existing seven-positional Rule(...) call sites
+    # (and the tests) predate value_json and must keep working unchanged.
+    value_json: Any = None
 
 
 @dataclass(frozen=True)
@@ -242,6 +420,17 @@ class RuleSet:
     def has(self, key: str) -> bool:
         """True when the rules plane has loaded ``key`` for this pair."""
         return key in self.rules
+
+    def anchor(self, key: str) -> AnchorRule | None:
+        """Return the parsed anchor for ``key``, or None when not loaded.
+
+        ``key`` is a ``*_anchor`` field_key (``renewal_anchor``, ``csr_anchor``,
+        ``ce_anchor``). The anchor is stored in the rule's ``value_json``.
+        """
+        rule = self.rules.get(key)
+        if rule is None or rule.value_json is None:
+            return None
+        return parse_anchor(rule.value_json)
 
     def version_for(self, obligation_type: str) -> int | None:
         """The ``requirements.version`` to stamp on an obligation of this type.
@@ -739,6 +928,15 @@ def _state_duties(
     anchor = lic.expiry_date
     if anchor is None and lic.issue_date is not None:
         anchor = add_months(lic.issue_date, rules.months("renewal_cycle_months"))
+    # An authored renewal_anchor overrides the credential date; with none loaded
+    # this returns `anchor` unchanged (the default, correct in most states).
+    anchor = resolve_anchor(
+        rules.anchor("renewal_anchor"),
+        credential_anchor=anchor,
+        issue_date=lic.issue_date,
+        expiry_date=lic.expiry_date,
+        as_of=as_of,
+    )
     due, window = compute_due_date(rules, "license_renewal", anchor, as_of)
     severity, reason = severity_for(
         "license_renewal",
@@ -765,7 +963,16 @@ def _state_duties(
     # --- csr_renewal -------------------------------------------------------
     if rules.flag("csr_required"):
         csr = _find_registration(roster, aff.clinician_id, "state_csr", lic.state)
-        anchor = csr.expiry_date if csr is not None else None
+        # CT (28 Feb, odd years), DE and RI (licence issue + offset) run the CSR
+        # clock off a schedule of their own, expressed as a csr_anchor. With no
+        # anchor loaded this is just the registration's expiry, as before.
+        anchor = resolve_anchor(
+            rules.anchor("csr_anchor"),
+            credential_anchor=csr.expiry_date if csr is not None else None,
+            issue_date=lic.issue_date,
+            expiry_date=lic.expiry_date,
+            as_of=as_of,
+        )
         due, window = compute_due_date(rules, "csr_renewal", anchor, as_of)
         severity, reason = severity_for(
             "csr_renewal",
@@ -1069,10 +1276,21 @@ def _ce_cycle_bounds(
     ]
     if ends:
         cycle_end = max(e for e in ends if e is not None)
-    elif lic.expiry_date is not None:
-        cycle_end = lic.expiry_date
     else:
-        cycle_end = add_months(roster.as_of, cycle_months)
+        # No CE ledger for this state: anchor the cycle end. A ce_anchor states
+        # the CE clock outright; failing that a renewal_anchor carries it (CE
+        # tracks renewal in most states); failing both it is the licence expiry,
+        # exactly as before. Only when none of those yields a date does it fall
+        # to as_of + the cycle length.
+        ce_rule = rules.anchor("ce_anchor") or rules.anchor("renewal_anchor")
+        anchored = resolve_anchor(
+            ce_rule,
+            credential_anchor=lic.expiry_date,
+            issue_date=lic.issue_date,
+            expiry_date=lic.expiry_date,
+            as_of=roster.as_of,
+        )
+        cycle_end = anchored if anchored is not None else add_months(roster.as_of, cycle_months)
 
     starts = [
         rec.cycle_start
@@ -1224,7 +1442,7 @@ order by clinician_id, action_date
 # (state, license_type, field_key) with ux_requirements_current, which is what
 # makes "the rule version used is is_current" decidable (PRD 8.1 condition 5).
 _QUERY_REQUIREMENTS = """
-select state, license_type, field_key, value_num, value_bool, value_text, version
+select state, license_type, field_key, value_num, value_bool, value_text, value_json, version
 from requirements
 where is_current and deleted_at is null
 order by state, license_type, field_key
@@ -1319,7 +1537,8 @@ def load_roster(conn: psycopg.Connection, as_of: date) -> Roster:
             value_num=row[3],
             value_bool=row[4],
             value_text=row[5],
-            version=int(row[6]),
+            value_json=row[6],
+            version=int(row[7]),
         )
         rule_sets.setdefault((state, license_type), {})[rule.field_key] = rule
 
