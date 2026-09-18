@@ -6,7 +6,7 @@ VENV   ?= .venv
 BIN    := $(VENV)/bin
 
 .DEFAULT_GOAL := help
-.PHONY: help install install-s3 test test-db lint typecheck migrate ingest status clean
+.PHONY: help install install-s3 lock test test-db lint typecheck migrate ingest status clean
 
 help: ## Show this list of targets.
 	@grep -hE '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[1m%-12s\033[0m %s\n", $$1, $$2}'
@@ -18,6 +18,15 @@ install: ## Create .venv and install the package plus dev tooling, editable.
 
 install-s3: ## Add the boto3 extra, needed when STORAGE_PATH is an s3:// URI.
 	$(BIN)/python -m pip install -e ".[dev,s3]"
+
+lock: ## Regenerate the hashed lockfiles from pyproject (needs uv on PATH).
+	@# Universal resolution: one file carries every platform's wheel hashes with
+	@# markers, so plain `pip install --require-hashes` works on Linux CI and on a
+	@# Windows dev box from the same file. Re-run this whenever pyproject's
+	@# dependencies change, and commit the result.
+	uv pip compile --universal --generate-hashes pyproject.toml -o requirements.txt
+	uv pip compile --universal --generate-hashes --extra s3 --extra dev \
+	  pyproject.toml -o requirements-dev.txt
 
 test: ## Run the test suite (no network, no database).
 	$(BIN)/pytest -m "not network and not database"
