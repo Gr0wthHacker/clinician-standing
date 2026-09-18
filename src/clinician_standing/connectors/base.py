@@ -193,6 +193,10 @@ class Connector(ABC):
         self.run_id: UUID = uuid4()
         self.request_ref: str | None = None
         self.fetched_path: Path | None = None
+        # True when fetch() returned a caller-owned file (a LOCAL_SOURCE_*
+        # override) rather than something this run downloaded. _cleanup() must
+        # never unlink such a file: it belongs to the operator, not to the run.
+        self.fetched_is_external: bool = False
         self.fetched_checksum: str | None = None
         self.fetched_at: datetime = datetime.now(UTC)
         self.evidence_id: UUID | None = None
@@ -502,26 +506,87 @@ class Connector(ABC):
                             result.diff_ref,
                         ),
                     )
-        except psycopg.Error as exc:
-            # The run log is the audit trail; losing it is serious, but it must
-            # not mask the original failure that is already on the RunResult.
+        except Exception as exc:
+            # Deliberately broad. The run log is the audit trail; losing it is
+            # serious, but it must not mask the original failure that is already
+            # on the RunResult, and it must never escape run()'s `finally` and
+            # abort the whole batch. psycopg.Error is not enough: a missing
+            # DATABASE_URL makes db.connect() raise ConfigError, a plain
+            # RuntimeError, which used to take the entire ingest down and leave
+            # every source without a source_runs row.
             self.log.error("could not write source_runs row for %s: %s", self.key, exc)
+
+    # -------------------------------------------------------- storage guard
+
+    #: Path fragments that mark a directory as living only for the duration of a
+    #: CI job. GITHUB_WORKSPACE is checked separately, at run time.
+    EPHEMERAL_STORAGE_MARKERS: ClassVar[tuple[str, ...]] = ("/home/runner/work",)
+
+    def _check_storage_durability(self) -> None:
+        """Refuse to write raw payloads into storage that dies with the job.
+
+        ``evidence.payload_ref`` is a seven-year retention pointer and the diff
+        state lives beside it. Under a CI runner's workspace both are destroyed
+        minutes after the run: every payload_ref cites a path that no longer
+        exists, and every run re-classifies the whole file as new because the
+        previous state is gone. ``config.py`` and ``evidence.py`` already
+        support an ``s3://`` STORAGE_PATH; that is the fix.
+
+        Raises:
+            ConnectorError: When raw payload storage is on and ``storage_path``
+                is under a known-ephemeral root.
+        """
+        if not self.settings.store_raw_payloads or self.settings.storage_is_s3:
+            return
+        root = str(self.settings.local_storage_root)
+        reason = next((m for m in self.EPHEMERAL_STORAGE_MARKERS if m in root), None)
+        workspace = (os.environ.get("GITHUB_WORKSPACE") or "").strip()
+        if reason is None and workspace:
+            try:
+                resolved = str(Path(workspace).expanduser().resolve())
+            except OSError:  # pragma: no cover - unreadable workspace path
+                resolved = workspace
+            if root == resolved or root.startswith(resolved.rstrip("/") + "/"):
+                reason = "$GITHUB_WORKSPACE"
+        if reason is None:
+            return
+        raise ConnectorError(
+            f"STORAGE_PATH {root} is inside an ephemeral CI workspace ({reason}). "
+            "Raw evidence payloads are retained seven years and evidence.payload_ref "
+            "would cite a path destroyed with the runner, while the diff state beside "
+            "it would be lost and every run would report the whole file as new. Set "
+            "STORAGE_PATH to an s3:// URI, or set STORE_RAW_PAYLOADS=false for a "
+            "throwaway run."
+        )
 
     # ------------------------------------------------------------------- run
 
-    def run(self) -> RunResult:
+    def run(self, dry_run: bool = False) -> RunResult:
         """Orchestrate fetch, checksum, diff and load, and log the run.
+
+        Args:
+            dry_run: Fetch, parse and diff, but do not call :meth:`load`, do not
+                promote the diff state, and do not write a ``source_runs`` row.
+                The diff summary is still written to storage so the run can be
+                inspected. The result carries ``status='dry-run'``.
 
         Returns:
             A :class:`RunResult`. The method does not raise on connector
-            failure; it records ``status='failed'`` with the error text and
-            returns, so a batch run can continue to the next source.
+            failure: it records ``status='failed'`` with the error text and
+            returns, so a batch run can continue to the next source. That
+            includes a failure to write the ``source_runs`` row itself, which
+            :meth:`_write_source_run` swallows rather than raising out of the
+            ``finally`` below.
         """
         result = RunResult(source_key=self.key, run_id=self.run_id, started_at=datetime.now(UTC))
         diff: DiffResult | None = None
         loaded = False
         try:
             self.settings.validate()
+            if not dry_run:
+                # A dry run writes no evidence, so an ephemeral store cannot
+                # produce a payload_ref that outlives the runner.
+                self._check_storage_durability()
             path = self.fetch()
             self.fetched_path = path
             self.fetched_checksum = self.checksum(path)
@@ -547,22 +612,48 @@ class Connector(ABC):
                 self.settings,
             )
 
-            self.load(diff)
-            loaded = True
-            self._promote_state(diff)
-            result.status = "ok"
+            if dry_run:
+                self.log.warning(
+                    "dry run: skipping load() and the source_runs row for %s", self.key
+                )
+                result.status = "dry-run"
+            else:
+                self.load(diff)
+                loaded = True
+                self._promote_state(diff)
+                result.status = "ok"
         except Exception as exc:
             result.status = "partial" if loaded else "failed"
             result.error = f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"[:8000]
             self.log.exception("connector %s failed", self.key)
         finally:
             result.finished_at = datetime.now(UTC)
-            self._write_source_run(result)
+            if not dry_run:
+                self._write_source_run(result)
             self._cleanup(diff)
         return result
 
+    def _is_run_scratch(self, candidate: Path) -> bool:
+        """True when ``candidate`` is a file this run created under ``work_dir``.
+
+        Anything else -- above all a ``LOCAL_SOURCE_*`` override, which is a
+        path the operator handed us and still owns -- is left alone.
+        """
+        if self.fetched_is_external and candidate == self.fetched_path:
+            return False
+        try:
+            work_dir = self.settings.work_dir.expanduser().resolve()
+            return candidate.expanduser().resolve().parent == work_dir
+        except OSError:
+            return False
+
     def _cleanup(self, diff: DiffResult | None) -> None:
-        """Remove scratch files unless KEEP_DOWNLOADS asks to keep them."""
+        """Remove scratch files unless KEEP_DOWNLOADS asks to keep them.
+
+        Only files this run created under ``work_dir`` are removed. A source
+        file supplied through ``LOCAL_SOURCE_*`` is the operator's own copy and
+        is never deleted.
+        """
         if self.settings.keep_downloads:
             return
         for candidate in (
@@ -572,8 +663,12 @@ class Connector(ABC):
         ):
             if candidate is None:
                 continue
+            path = Path(candidate)
+            if not self._is_run_scratch(path):
+                self.log.info("leaving %s in place; this run did not create it", path)
+                continue
             try:
-                Path(candidate).unlink(missing_ok=True)
+                path.unlink(missing_ok=True)
             except OSError as exc:
                 self.log.warning("could not remove %s: %s", candidate, exc)
 

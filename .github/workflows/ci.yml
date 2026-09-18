@@ -57,6 +57,27 @@ jobs:
         if: ${{ !cancelled() }}
         run: mypy
 
+      # The workflow in ingest-monthly.yml and the `ingest` target in the
+      # Makefile invoke the CLI with flags. Nothing else in CI executes the
+      # entry point, so a renamed or dropped flag used to surface only as
+      # `error: unrecognized arguments` in a scheduled run a month later.
+      # Fail the build here instead.
+      - name: CLI contract
+        id: cli_contract
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          clinician-standing --help
+          clinician-standing ingest --help
+          help_text="$(clinician-standing ingest --help)"
+          for flag in --all --sources --dry-run; do
+            if ! printf '%s' "$help_text" | grep -q -- "$flag"; then
+              echo "::error::clinician-standing ingest no longer accepts $flag," \
+                   "which ingest-monthly.yml and the Makefile pass"
+              exit 1
+            fi
+          done
+
       - name: Pytest
         id: pytest
         if: ${{ !cancelled() }}

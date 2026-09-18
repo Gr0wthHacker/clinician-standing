@@ -2,7 +2,9 @@
 
 Three subcommands, each one thing a scheduler or an engineer needs:
 
-* ``ingest <connector_key|all>`` runs connectors and writes ``source_runs``.
+* ``ingest <connector_key|all>`` (or ``ingest --all`` / ``ingest --sources a,b``)
+  runs connectors and writes ``source_runs``. ``--dry-run`` stops after the
+  diff.
 * ``status`` prints the last run per source and freshness compliance, which is
   the data behind the Source health screen (PRD section 10) and the
   "source freshness compliance >= 99%" metric (section 11).
@@ -23,7 +25,7 @@ from typing import Any
 import psycopg
 
 from .config import REQUIRED_TABLES, ConfigError, get_settings
-from .connectors import CONNECTORS, connector_keys, get_connector
+from .connectors import CONNECTORS, RunResult, connector_keys, get_connector
 from .db import connect, fetch_all, missing_tables
 from .evidence import EvidenceRequired
 
@@ -111,6 +113,28 @@ def build_parser() -> argparse.ArgumentParser:
             "Defaults to INGEST_SOURCES, or all when that is unset."
         ),
     )
+    # --all and --sources are the forms the Makefile and ingest-monthly.yml use.
+    # The positional above keeps working; the flags win when both are given.
+    selection = ingest.add_mutually_exclusive_group()
+    selection.add_argument(
+        "--all",
+        action="store_true",
+        help="run every registered connector (same as the positional 'all')",
+    )
+    selection.add_argument(
+        "--sources",
+        metavar="KEYS",
+        default=None,
+        help="comma-separated connector keys to run, or 'all'",
+    )
+    ingest.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "fetch, parse and diff, then stop: no load() and no source_runs row. "
+            "The diff summary is still written to STORAGE_PATH."
+        ),
+    )
 
     sub.add_parser("status", help="last run per source and freshness compliance")
     sub.add_parser("init-check", help="verify the database is reachable and the schema present")
@@ -148,13 +172,15 @@ def _resolve_keys(connector_key: str | None) -> list[str]:
     return [k for k in connector_keys() if k in set(requested)]
 
 
-def _run_ingest(connector_key: str | None, as_json: bool) -> int:
+def _run_ingest(connector_key: str | None, as_json: bool, dry_run: bool = False) -> int:
     """Run one connector, a named subset, or every connector.
 
     Args:
         connector_key: A registry key, ``all``, a comma-separated list, or None
             to fall back to ``INGEST_SOURCES``.
         as_json: Emit JSON rather than text.
+        dry_run: Fetch, parse and diff only; skip ``load()`` and the
+            ``source_runs`` write.
 
     Returns:
         Process exit code.
@@ -166,13 +192,33 @@ def _run_ingest(connector_key: str | None, as_json: bool) -> int:
         print(str(exc.args[0]), file=sys.stderr)
         return EXIT_CONFIG
 
+    if dry_run:
+        LOGGER.warning(
+            "DRY RUN: %s will fetch, parse and diff; no load() and no source_runs row",
+            ", ".join(keys),
+        )
+
     results: list[dict[str, Any]] = []
     failures = 0
     for key in keys:
         connector = CONNECTORS[key](settings)
         LOGGER.info("starting connector %s", key)
-        result = connector.run()
-        if not result.ok:
+        started = datetime.now(UTC)
+        try:
+            result = connector.run(dry_run=dry_run)
+        except Exception as exc:
+            # run() promises never to raise. If it ever does, one bad connector
+            # must not end the batch and cost every later source its run.
+            LOGGER.exception("connector %s raised out of run()", key)
+            result = RunResult(
+                source_key=key,
+                run_id=connector.run_id,
+                started_at=started,
+                finished_at=datetime.now(UTC),
+                status="failed",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+        if result.status not in {"ok", "dry-run"}:
             failures += 1
         duration = (
             (result.finished_at - result.started_at).total_seconds() if result.finished_at else None
@@ -180,6 +226,7 @@ def _run_ingest(connector_key: str | None, as_json: bool) -> int:
         results.append(
             {
                 "source_key": result.source_key,
+                "dry_run": dry_run,
                 "run_id": str(result.run_id),
                 "status": result.status,
                 "rows_in": result.rows_in,
@@ -194,6 +241,8 @@ def _run_ingest(connector_key: str | None, as_json: bool) -> int:
     if as_json:
         print(json.dumps(results, indent=2))
     else:
+        if dry_run:
+            print("DRY RUN -- nothing was loaded and no source_runs row was written")
         for row in results:
             print(
                 f"{row['source_key']:<20} {row['status']:<8} "
@@ -365,7 +414,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         if args.command == "ingest":
-            return _run_ingest(args.connector, args.json)
+            # --sources and --all are mutually exclusive in the parser; either
+            # one overrides the positional so the workflow and the Makefile can
+            # keep using flags while `ingest oig_leie` still works.
+            selection = args.sources or ("all" if args.all else args.connector)
+            return _run_ingest(selection, args.json, dry_run=args.dry_run)
         if args.command == "status":
             return _run_status(args.json)
         if args.command == "init-check":

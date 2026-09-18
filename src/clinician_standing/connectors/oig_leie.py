@@ -98,7 +98,6 @@ STAGING_COLUMNS: tuple[str, ...] = (
     "specialty",
     "upin",
     "npi",
-    "dob",
     "dob_hash",
     "address",
     "city",
@@ -121,7 +120,6 @@ create temporary table stg_oig_leie (
     specialty          text,
     upin               text,
     npi                text,
-    dob                date,
     dob_hash           text,
     address            text,
     city               text,
@@ -140,7 +138,7 @@ select
     c.id, c.npi, s.last_name, s.first_name, s.middle_name, s.business_name,
     s.general_category, s.specialty, s.exclusion_type, s.exclusion_date,
     s.reinstatement_date, s.waiver_date, s.waiver_state, s.address, s.city,
-    s.state, s.zip, s.dob
+    s.state, s.zip, s.dob_hash
 from stg_oig_leie s
 join clinicians c on c.npi = s.npi
 where s.npi is not null
@@ -275,6 +273,8 @@ class OigLeieConnector(Connector):
         override = self.settings.local_source_override(self.key)
         if override is not None:
             self.request_ref = f"file://{override}"
+            # The operator owns this file; _cleanup() must not delete it.
+            self.fetched_is_external = True
             self.log.warning("using LOCAL_SOURCE override %s instead of fetching", override)
             return override
         self.request_ref = LEIE_URL
@@ -324,7 +324,6 @@ class OigLeieConnector(Connector):
                     "specialty": _clean(raw.get(COL_SPECIALTY)) or None,
                     "upin": _clean(raw.get(COL_UPIN)) or None,
                     "npi": npi,
-                    "dob": birth_date,
                     "dob_hash": dob_hash(birth_date),
                     "address": _clean(raw.get(COL_ADDRESS)) or None,
                     "city": _clean(raw.get(COL_CITY)) or None,
@@ -340,11 +339,13 @@ class OigLeieConnector(Connector):
     def identity_key(self, row: dict[str, Any]) -> str:
         """Identity of an exclusion row.
 
-        NPI is used when present. Otherwise the identity is the name, date of
-        birth and business name together with the exclusion date, which is the
-        closest thing to a stable key the file offers. This is for change
-        detection between runs only; it is never used to assert that a row is a
-        particular clinician.
+        NPI is used when present. Otherwise the identity is the name, hashed
+        date of birth and business name together with the exclusion date, which
+        is the closest thing to a stable key the file offers. The key needs
+        stability, not a readable date, so the hash serves and the raw date of
+        birth never leaves :meth:`parse`. This is for change detection between
+        runs only; it is never used to assert that a row is a particular
+        clinician.
         """
         parts = [
             "npi" if row.get("npi") else "name",
@@ -352,7 +353,7 @@ class OigLeieConnector(Connector):
             row.get("last_name") or "",
             row.get("first_name") or "",
             row.get("middle_name") or "",
-            str(row.get("dob") or ""),
+            row.get("dob_hash") or "",
             row.get("business_name") or "",
             str(row.get("exclusion_date") or ""),
             # Address is part of the key because OIG lists a single excluded
@@ -391,8 +392,17 @@ class OigLeieConnector(Connector):
         person, so the audit trail has to show exactly which LEIE row was matched
         and by which key, not just that a file was downloaded that day.
 
+        **Screening scope is the whole file, not the change set.** PRD section 7
+        requires a monthly exclusion screen against every clinician on the
+        roster. An NPI that was already excluded last month produces no diff row
+        this month, so staging only ``diff.iter_rows()`` would never match it
+        against a clinician onboarded since -- the exclusion would be invisible
+        for as long as the roster kept growing. The full parsed file is staged
+        every run (84,001 rows) and the entire roster is screened against it.
+        The diff is kept for reporting ``rows_new``/``rows_changed`` only.
+
         Args:
-            diff: Change set from :meth:`diff`.
+            diff: Change set from :meth:`diff`, used for reporting.
         """
         if self.fetched_path is None or self.fetched_checksum is None:
             raise ConnectorError("load() called before fetch()")
@@ -430,18 +440,22 @@ class OigLeieConnector(Connector):
             )
             self.evidence_id = file_evidence_id
 
-            if not diff.has_changes:
-                self.log.info("no new or changed LEIE rows; evidence recorded, nothing derived")
-                return
-
             with conn.cursor() as cur:
                 cur.execute(_CREATE_STAGING)
-            copy_from_csv(
+            # The full file, re-parsed -- not diff.iter_rows(). See the note on
+            # screening scope in this method's docstring.
+            staged = copy_from_csv(
                 conn,
                 "stg_oig_leie",
                 STAGING_COLUMNS,
-                (tuple(row[c] for c in STAGING_COLUMNS) for row in diff.iter_rows()),
+                (tuple(row[c] for c in STAGING_COLUMNS) for row in self.parse(self.fetched_path)),
                 batch_size=self.settings.copy_batch_size,
+            )
+            self.log.info(
+                "staged %s LEIE rows for a full-roster screen (new=%s changed=%s this run)",
+                f"{staged:,}",
+                f"{diff.rows_new:,}",
+                f"{diff.rows_changed:,}",
             )
             with conn.cursor() as cur:
                 cur.execute("create index on stg_oig_leie (npi)")

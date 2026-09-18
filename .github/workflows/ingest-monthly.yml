@@ -52,6 +52,28 @@ concurrency:
 
 env:
   PYTHON_VERSION: "3.11"
+  # =========================================================================
+  # STORAGE_PATH holds two things that must outlive the job:
+  #
+  #   1. Raw evidence payloads. evidence.payload_ref points here and the
+  #      retention requirement is seven years. A path under the runner
+  #      workspace is destroyed minutes after the run, so every payload_ref
+  #      written from here cites a file that no longer exists.
+  #   2. The connector diff state (storage/state/**). Lose it and every run
+  #      re-classifies the whole file as new -- all 2.0M DAC rows -- and the
+  #      Phase 2 acceptance criterion fails silently with status ok.
+  #
+  # PRODUCTION FIX: set this to an s3://bucket/prefix URI. config.py parses
+  # it (S3 bucket/prefix, see Settings.storage_is_s3) and evidence.py already
+  # writes and reads through boto3, so nothing else has to change beyond
+  # giving the job AWS credentials.
+  #
+  # Until that is done, Connector.run() REFUSES to run with raw payload
+  # storage enabled and a STORAGE_PATH inside the workspace, rather than
+  # writing evidence rows that point at a dead path. To run here anyway,
+  # without raw payload retention, set STORE_RAW_PAYLOADS=false on the ingest
+  # step below; the cache step keeps the diff state across runs.
+  # =========================================================================
   STORAGE_PATH: ${{ github.workspace }}/storage
 
 jobs:
@@ -101,7 +123,26 @@ jobs:
           python -m pip install -e .
 
       - name: Prepare storage directory
-        run: mkdir -p "$STORAGE_PATH"
+        run: mkdir -p "$STORAGE_PATH/state"
+
+      # ---------------------------------------------------------------------
+      # Carry the connector diff state between monthly runs. Without it the
+      # diff has nothing to compare against and reports every row as new.
+      #
+      # The key is unique per run so each run saves a fresh entry; restore-keys
+      # falls back to the newest entry with the same prefix, which is the
+      # previous month's state. This is the minimum viable fix, not the right
+      # one: an Actions cache is best-effort and is evicted after 7 days
+      # without a hit, and it does nothing for the seven-year payload
+      # retention. See the STORAGE_PATH comment above for the s3:// fix.
+      # ---------------------------------------------------------------------
+      - name: Restore connector diff state
+        uses: actions/cache@v4
+        with:
+          path: storage/state
+          key: ingest-state-${{ github.run_id }}
+          restore-keys: |
+            ingest-state-
 
       # ---------------------------------------------------------------------
       # The ingest itself. `continue-on-error` is deliberate: a failure must

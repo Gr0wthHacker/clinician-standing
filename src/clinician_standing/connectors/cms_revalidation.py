@@ -117,6 +117,15 @@ create temporary table stg_cms_revalidation (
 
 # One row per (individual NPI, group PAC ID). The file can repeat a pair across
 # record types, so collapse before touching enrollments.
+#
+# The `distinct on ... order by individual_due_date nulls last` below only picks
+# the right row when stg_cms_revalidation holds EVERY row for the pair. On the
+# real file 1,048 pairs carry more than one distinct due date and 1,035 of those
+# mix a real date with TBD (which parses to NULL). Staged from a change set,
+# a month in which only the TBD row moved would leave the NULL as the pair's
+# only row, and _UPDATE_ENROLLMENTS would overwrite a genuine past-due date with
+# NULL and flip the status back to 'approved'. load() therefore stages the full
+# current file, never diff.iter_rows().
 _CREATE_PAIRS = """
 create temporary table stg_reval_pairs on commit drop as
 select distinct on (individual_npi, group_pac_id)
@@ -289,6 +298,8 @@ class CmsRevalidationConnector(Connector):
         override = self.settings.local_source_override(self.key)
         if override is not None:
             self.request_ref = f"file://{override}"
+            # The operator owns this file; _cleanup() must not delete it.
+            self.fetched_is_external = True
             self.log.warning("using LOCAL_SOURCE override %s instead of fetching", override)
             return override
         url = self.discover_download_url()
@@ -379,8 +390,15 @@ class CmsRevalidationConnector(Connector):
         materializes for pairs whose clinician and practice already exist, which
         means the DAC connector has to have run first.
 
+        The diff decides *whether* to load; it does not decide *what* is
+        staged. ``stg_cms_revalidation`` is built from the full current file so
+        that ``stg_reval_pairs`` sees every row for an (NPI, group) pair -- see
+        the comment above ``_CREATE_PAIRS`` for the data loss that follows from
+        staging a change set instead.
+
         Args:
-            diff: Change set from :meth:`diff`.
+            diff: Change set from :meth:`diff`; used to decide whether to load
+                and to report ``rows_new``/``rows_changed``.
         """
         if self.fetched_path is None or self.fetched_checksum is None:
             raise ConnectorError("load() called before fetch()")
@@ -422,12 +440,20 @@ class CmsRevalidationConnector(Connector):
 
             with conn.cursor() as cur:
                 cur.execute(_CREATE_STAGING)
-            copy_from_csv(
+            # The full current file, re-parsed -- not diff.iter_rows(). See the
+            # comment above _CREATE_PAIRS.
+            staged = copy_from_csv(
                 conn,
                 "stg_cms_revalidation",
                 STAGING_COLUMNS,
-                (tuple(row[c] for c in STAGING_COLUMNS) for row in diff.iter_rows()),
+                (tuple(row[c] for c in STAGING_COLUMNS) for row in self.parse(self.fetched_path)),
                 batch_size=self.settings.copy_batch_size,
+            )
+            self.log.info(
+                "staged %s revalidation rows (new=%s changed=%s this run)",
+                f"{staged:,}",
+                f"{diff.rows_new:,}",
+                f"{diff.rows_changed:,}",
             )
 
             # enrollments.evidence_id is not-null by schema; check before the

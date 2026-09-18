@@ -313,6 +313,8 @@ class CmsDacConnector(Connector):
         override = self.settings.local_source_override(self.key)
         if override is not None:
             self.request_ref = f"file://{override}"
+            # The operator owns this file; _cleanup() must not delete it.
+            self.fetched_is_external = True
             self.log.warning("using LOCAL_SOURCE override %s instead of fetching", override)
             return override
         url = self.discover_download_url()

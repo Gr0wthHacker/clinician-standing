@@ -181,11 +181,21 @@ def read_blob(relative_key: str, settings: Settings | None = None) -> bytes | No
         except ImportError as exc:  # pragma: no cover
             raise EvidenceError("STORAGE_PATH is an s3:// URI but boto3 is not installed") from exc
         prefix = f"{settings.s3_prefix}/" if settings.s3_prefix else ""
+        object_key = f"{prefix}{relative_key}"
         client = boto3.client("s3")
         try:
-            response = client.get_object(Bucket=settings.s3_bucket, Key=f"{prefix}{relative_key}")
-        except ClientError:
-            return None
+            response = client.get_object(Bucket=settings.s3_bucket, Key=object_key)
+        except ClientError as exc:
+            # Only a genuine miss may read as "no previous state". An
+            # AccessDenied or a SlowDown swallowed here would present as a first
+            # run: the diff would reclassify the entire file as new and the run
+            # would finish green. Same code list as _s3_put.
+            code = exc.response.get("Error", {}).get("Code")
+            if code in {"404", "NoSuchKey", "NotFound"}:
+                return None
+            raise EvidenceError(
+                f"S3 get_object failed for s3://{settings.s3_bucket}/{object_key}: {exc}"
+            ) from exc
         return response["Body"].read()
 
     target = settings.local_storage_root / relative_key
