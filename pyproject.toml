@@ -16,9 +16,13 @@ keywords = ["healthcare", "credentialing", "cms", "oig", "leie", "supabase"]
 # handful of downloads, a CSV parse and a COPY into Postgres.
 dependencies = [
   "psycopg[binary]>=3.1,<4",   # Postgres driver; [binary] avoids needing libpq at build time
-  "requests>=2.31,<3",         # bulk-file downloads (streamed to disk, never held in memory)
-  "pandas>=2.1,<3",            # only for the 839MB DAC / 540MB revalidation CSV parse
 ]
+
+# requests and pandas were declared in the first draft and are deliberately not
+# used: downloads stream through urllib to disk, and the 839MB DAC and 540MB
+# revalidation files are parsed row-by-row with the csv module and loaded via
+# COPY. Holding either file in a DataFrame would defeat the memory profile that
+# lets this run on a standard GitHub Actions runner.
 
 [project.optional-dependencies]
 dev = [
