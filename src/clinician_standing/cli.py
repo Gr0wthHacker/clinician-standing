@@ -510,7 +510,8 @@ def _run_engine(as_of_raw: str | None, as_json: bool, dry_run: bool, limit: int)
         f"planned:       {summary['planned']}  "
         f"({'would insert' if dry_run else 'inserted'} {summary['inserted']}, "
         f"{'would update' if dry_run else 'updated'} {summary['updated']}, "
-        f"unchanged {summary['unchanged']})"
+        f"unchanged {summary['unchanged']}, "
+        f"{'would close' if dry_run else 'closed'} {summary['closed']})"
     )
     for obligation_type, count in summary["by_type"].items():
         print(f"  {obligation_type:<26} {count:>6,}")
