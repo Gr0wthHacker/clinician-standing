@@ -87,6 +87,13 @@ class Settings:
             again. Saves 1.4 GB of transfer when re-running a parse.
         default_sources: Connector keys ``ingest`` runs when given no argument.
         log_level: Root log level for the CLI.
+        dob_hash_salt: Secret prepended before a date of birth is hashed
+            (``clinicians.dob_hash`` and the OIG LEIE side). A date of birth is a
+            roughly 40,000-value space, so an unsalted sha256 is brute-forceable;
+            the salt makes the digest non-reversible. Empty by default, which
+            reproduces the old unsalted digest for change detection; LEIE
+            name+DOB matching requires a non-empty salt before it may store a
+            match against a named clinician.
     """
 
     database_url: str | None = None
@@ -103,6 +110,7 @@ class Settings:
     use_cache: bool = False
     default_sources: tuple[str, ...] = ()
     log_level: str = "INFO"
+    dob_hash_salt: str = ""
 
     # ---------------------------------------------------------------- loading
 
@@ -143,6 +151,7 @@ class Settings:
             use_cache=_env_bool("INGEST_USE_CACHE", False),
             default_sources=default_sources,
             log_level=_env_str("LOG_LEVEL", "INFO") or "INFO",
+            dob_hash_salt=_env_str("DOB_HASH_SALT", "") or "",
         )
 
     # ------------------------------------------------------------- validation

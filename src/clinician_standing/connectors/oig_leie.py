@@ -178,22 +178,32 @@ def _parse_date(value: str) -> date | None:
         return None
 
 
-def dob_hash(birth_date: date | None) -> str | None:
+def dob_hash(birth_date: date | None, salt: str = "") -> str | None:
     """Hash a date of birth the same way ``clinicians.dob_hash`` is built.
 
     The schema stores only a hash so a raw date of birth never sits in the
-    roster. Both sides must use the same normalization or the future name+DOB
-    match will never fire.
+    roster. Both sides must use the same ``salt`` and normalization or the future
+    name+DOB match will never fire.
+
+    A date of birth is a roughly 40,000-value space, so an unsalted sha256 of it
+    is trivially reversible by precomputing every date. ``salt`` is prepended
+    before hashing so the digest cannot be reversed without it. An empty salt
+    reproduces the old unsalted digest -- fine for the change-detection identity
+    key here, where the value is public LEIE data, but NOT safe once a date of
+    birth for a clinician on our roster is hashed. LEIE name+DOB matching must
+    require a non-empty ``DOB_HASH_SALT`` before it stores a match; see
+    :func:`match_by_name_dob`.
 
     Args:
         birth_date: Date of birth, or None.
+        salt: Secret prepended before hashing. From ``DOB_HASH_SALT``.
 
     Returns:
-        Hex sha256 of the ISO-8601 date, or None.
+        Hex sha256 of ``salt`` plus the ISO-8601 date, or None.
     """
     if birth_date is None:
         return None
-    return hashlib.sha256(birth_date.isoformat().encode("utf-8")).hexdigest()
+    return hashlib.sha256((salt + birth_date.isoformat()).encode("utf-8")).hexdigest()
 
 
 def match_by_name_dob(rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -222,6 +232,11 @@ def match_by_name_dob(rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
     * ``clinicians.dob_hash`` populated for the roster. Hashed DOB supports only
       exact date matching; fuzzy DOB would need a different storage decision and
       its own privacy review.
+    * a non-empty ``DOB_HASH_SALT``. An unsalted sha256 of a date of birth is
+      reversible (the input space is about 40,000 dates), so once a roster
+      clinician's DOB is hashed the salt is what keeps it non-reversible. The
+      same salt has to be configured on both the LEIE side and the roster side
+      for a match to fire. This function must refuse to run with an empty salt.
 
     Args:
         rows: Parsed LEIE rows with no NPI.
@@ -328,7 +343,7 @@ class OigLeieConnector(Connector):
                     "specialty": _clean(raw.get(COL_SPECIALTY)) or None,
                     "upin": _clean(raw.get(COL_UPIN)) or None,
                     "npi": npi,
-                    "dob_hash": dob_hash(birth_date),
+                    "dob_hash": dob_hash(birth_date, self.settings.dob_hash_salt),
                     "address": _clean(raw.get(COL_ADDRESS)) or None,
                     "city": _clean(raw.get(COL_CITY)) or None,
                     "state": _clean(raw.get(COL_STATE))[:2] or None,
