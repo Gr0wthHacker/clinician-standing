@@ -48,12 +48,19 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
-          cache-dependency-path: pyproject.toml
+          cache-dependency-path: requirements-dev.txt
 
+      # Install from the hashed lockfile, not from pyproject's version ranges, so
+      # CI runs the exact dependency set a `make lock` pinned. --require-hashes
+      # verifies every wheel; the editable package is installed separately with
+      # --no-deps because a local path has no hash. A dependency added to
+      # pyproject without a `make lock` fails here at import, which is the drift
+      # signal.
       - name: Install package and dev tooling
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
+          python -m pip install --require-hashes -r requirements-dev.txt
+          python -m pip install -e . --no-deps
 
       # Each check runs even if an earlier one failed, so one push surfaces
       # every problem instead of one problem at a time.
