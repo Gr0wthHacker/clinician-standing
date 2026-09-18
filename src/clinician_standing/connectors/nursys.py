@@ -91,6 +91,9 @@ POLL_INITIAL_SECONDS = 300
 POLL_INTERVAL_SECONDS = 60
 POLL_MAX_ATTEMPTS = 10
 
+#: Maximum nurses per Nurse Lookup / Manage Nurse List batch (spec 3.2, 3.4).
+NURSE_LOOKUP_BATCH = 2000
+
 #: Nursys expires the API password every 90 days; rotate before then.
 PASSWORD_MAX_AGE_DAYS = 90
 ROTATE_BEFORE_DAYS = 80
@@ -387,12 +390,28 @@ class NursysClient:
             f"Nursys {path} result for {transaction_id} not ready after {POLL_MAX_ATTEMPTS} polls"
         )
 
-    def notification_lookup(self, since: datetime | None) -> Any:
-        """Return license/discipline changes since ``since`` for enrolled nurses."""
-        body: dict[str, Any] = {}
-        if since is not None:
-            body["StartDate"] = since.date().isoformat()
-        return self._submit_and_poll(PATH_NOTIFICATION, body)
+    def notification_lookup(self, start: date, end: date) -> Any:
+        """Return license/discipline changes in ``[start, end]`` for enrolled nurses.
+
+        Both dates are required and must be on or before today, with start on or
+        before end (spec 3.5.1). The connector passes the last watermark as start
+        and the run date as end.
+        """
+        return self._submit_and_poll(
+            PATH_NOTIFICATION,
+            {"StartDate": start.isoformat(), "EndDate": end.isoformat()},
+        )
+
+    def nurse_lookup(self, requests: list[dict[str, Any]]) -> Any:
+        """Return full current licence data for a batch of enrolled nurses.
+
+        Used to establish a baseline on an account's first run, because
+        Notification Lookup only returns changes within a date range and would
+        miss the current status of a nurse who has not changed recently. Each
+        request is a matching combination (spec 3.4.2); enrolment by NCSBN ID is
+        the one this connector uses. Up to 2,000 per batch (spec 3.4).
+        """
+        return self._submit_and_poll(PATH_NURSE, {"NurseLookupRequests": requests})
 
     def change_password(self, new_password: str) -> None:
         """Change this account's API password (spec 3.3).
@@ -465,6 +484,13 @@ where enabled and deleted_at is null
 order by created_at
 """
 
+_QUERY_ENROLLED = """
+select account_id, ncsbn_id
+from nursys_enrollment
+where deleted_at is null and account_id is not null
+order by account_id
+"""
+
 
 def _load_accounts(settings: Settings) -> list[NursysAccount]:
     """Read every enabled Nursys account."""
@@ -473,6 +499,15 @@ def _load_accounts(settings: Settings) -> list[NursysAccount]:
             NursysAccount(r[0], r[1], r[2], r[3], r[4])
             for r in fetch_all(conn, _QUERY_ENABLED_ACCOUNTS)
         ]
+
+
+def _enrolled_by_account(settings: Settings) -> dict[str, list[int]]:
+    """Map each account id to the NCSBN ids enrolled under it."""
+    out: dict[str, list[int]] = {}
+    with transaction(None, settings) as conn:
+        for account_id, ncsbn_id in fetch_all(conn, _QUERY_ENROLLED):
+            out.setdefault(str(account_id), []).append(int(ncsbn_id))
+    return out
 
 
 # ===========================================================================
@@ -511,32 +546,57 @@ class NursysConnector(Connector):
         the clinician per account without a second pass.
         """
         accounts = _load_accounts(self.settings)
+        enrolled = _enrolled_by_account(self.settings)
         self.request_ref = f"nursys://notificationlookup ({len(accounts)} accounts)"
         out_path = self.work_file("notifications.ndjson")
         total = 0
         with out_path.open("w", encoding="utf-8") as handle:
             for account in accounts:
-                total += self._fetch_account(account, handle)
+                total += self._fetch_account(account, enrolled.get(str(account.id), []), handle)
         self.log.info("nursys: %s license notifications across %s accounts", total, len(accounts))
         return out_path
 
-    def _fetch_account(self, account: NursysAccount, handle: Any) -> int:
-        """Fetch one account's notifications, writing NDJSON rows. Returns count."""
+    def _fetch_account(
+        self, account: NursysAccount, ncsbn_ids: list[int], handle: Any
+    ) -> int:
+        """Fetch one account's licences, writing NDJSON rows. Returns the count.
+
+        First run for an account (no watermark): a Nurse Lookup baseline over
+        every enrolled nurse, because Notification Lookup returns only changes
+        within a date range and would miss the current status of a nurse who has
+        not changed recently. Thereafter: Notification Lookup for the window
+        between the last watermark and the run date.
+        """
         credential = self._store.get_nursys(account.auth_ref)
         client = NursysClient(credential, opener=self._opener, sleep_fn=self._sleep)
-        payload = client.notification_lookup(account.last_notification_at)
-        newest = account.last_notification_at
+        if account.last_notification_at is None:
+            payloads = self._baseline_payloads(client, ncsbn_ids)
+        else:
+            payloads = [
+                client.notification_lookup(
+                    account.last_notification_at.date(), self.fetched_at.date()
+                )
+            ]
         count = 0
-        for lic in iter_nurse_licenses(payload):
-            handle.write(
-                json.dumps({"account_id": str(account.id), "license": lic}, default=str) + "\n"
-            )
-            count += 1
-        # Watermark advances to now: Notification Lookup returns changes since the
-        # supplied StartDate, so the next run should start from this fetch.
+        for payload in payloads:
+            for lic in iter_nurse_licenses(payload):
+                handle.write(
+                    json.dumps({"account_id": str(account.id), "license": lic}, default=str) + "\n"
+                )
+                count += 1
+        # Watermark advances to the run date: the next run's Notification Lookup
+        # starts where this one's window ended.
         self._new_watermarks[str(account.id)] = self.fetched_at
-        _ = newest
         return count
+
+    def _baseline_payloads(self, client: NursysClient, ncsbn_ids: list[int]) -> list[Any]:
+        """Nurse Lookup every enrolled nurse, batched to the API's 2,000 limit."""
+        payloads: list[Any] = []
+        for start in range(0, len(ncsbn_ids), NURSE_LOOKUP_BATCH):
+            batch = [{"NcsbnId": n} for n in ncsbn_ids[start : start + NURSE_LOOKUP_BATCH]]
+            if batch:
+                payloads.append(client.nurse_lookup(batch))
+        return payloads
 
     # ----------------------------------------------------------------- parse
     def parse(self, path: Path) -> Iterator[dict[str, Any]]:

@@ -205,14 +205,21 @@ class _FakeTransport:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
         self.change_password_body: dict | None = None
+        self.last_post_body: dict | None = None
 
     def __call__(self, request, timeout=None):  # noqa: ANN001 - urlopen shape
         method = request.get_method()
         url = request.full_url
         self.calls.append((method, url))
+        if method == "POST" and request.data is not None:
+            self.last_post_body = json.loads(request.data.decode("utf-8"))
         if "notificationlookup" in url and method == "POST":
             return _FakeResponse({"TransactionId": "txn-1"})
         if "notificationlookup" in url and method == "GET":
+            return _FakeResponse(_SAMPLE_PAYLOAD)
+        if "nurselookup" in url and method == "POST":
+            return _FakeResponse({"TransactionId": "nl-1"})
+        if "nurselookup" in url and method == "GET":
             return _FakeResponse(_SAMPLE_PAYLOAD)
         if "changepassword" in url and method == "POST":
             self.change_password_body = json.loads(request.data.decode("utf-8"))
@@ -235,14 +242,26 @@ def test_client_rejects_non_https_url() -> None:
         NursysClient(NursysCredential("https://u:p@host/y", "u", "p"))
 
 
-def test_client_notification_lookup_submits_then_polls() -> None:
+def test_client_notification_lookup_sends_both_dates_and_polls() -> None:
+    from datetime import date
+
     transport = _FakeTransport()
     client = NursysClient(_credential(), opener=transport, sleep_fn=lambda _s: None)
-    payload = client.notification_lookup(since=None)
+    payload = client.notification_lookup(date(2026, 9, 1), date(2026, 9, 18))
     rows = list(iter_nurse_licenses(payload))
     assert len(rows) == 2
     methods = [m for m, _ in transport.calls]
     assert methods == ["POST", "GET"]  # exactly one submit and one poll
+    # Both dates are required by the API (spec 3.5.1).
+    assert transport.last_post_body == {"StartDate": "2026-09-01", "EndDate": "2026-09-18"}
+
+
+def test_client_nurse_lookup_submits_batch_and_polls() -> None:
+    transport = _FakeTransport()
+    client = NursysClient(_credential(), opener=transport, sleep_fn=lambda _s: None)
+    payload = client.nurse_lookup([{"NcsbnId": 99912345}])
+    assert len(list(iter_nurse_licenses(payload))) == 2
+    assert transport.last_post_body == {"NurseLookupRequests": [{"NcsbnId": 99912345}]}
 
 
 def test_client_change_password_sends_new_password() -> None:
