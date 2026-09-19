@@ -368,7 +368,15 @@ class CmsDacConnector(Connector):
         self.dataset_modified = document.get("modified")
 
         for distribution in document.get("distribution", []) or []:
-            data = distribution.get("data") or {}
+            # The metastore item exposes each distribution's fields flat on the
+            # distribution object (downloadURL, mediaType directly). A reference-
+            # expanded view of the same catalog nests them under "data" instead,
+            # so both shapes are accepted: the plain item endpoint returns flat,
+            # and CMS has served the nested form from other paths. Reading only
+            # one shape is how this broke -- the live item is flat, and the
+            # connector looked only under "data", so every monthly run failed at
+            # discovery with "no CSV distribution".
+            data = distribution.get("data") or distribution
             media_type = (data.get("mediaType") or "").lower()
             url = data.get("downloadURL")
             if url and (media_type == "text/csv" or url.lower().endswith(".csv")):
