@@ -434,9 +434,7 @@ def _gather(conn: psycopg.Connection, as_of: date) -> list[ObligationFacts]:
     current_rules = {
         (str(r[0]).strip(), r[1]): set(r[2]) for r in fetch_all(conn, _QUERY_CURRENT_RULES)
     }
-    open_conflicts = {
-        (str(r[0]).strip(), r[1]) for r in fetch_all(conn, _QUERY_OPEN_CONFLICTS)
-    }
+    open_conflicts = {(str(r[0]).strip(), r[1]) for r in fetch_all(conn, _QUERY_OPEN_CONFLICTS)}
     excluded = {r[0] for r in fetch_all(conn, _QUERY_EXCLUSIONS, {"as_of": as_of})}
 
     # Per-type roster-wide screen coverage: the evidence id of the latest fresh
@@ -488,8 +486,17 @@ def _facts_for(
     screen_coverage: dict[str, UUID],
 ) -> ObligationFacts:
     """Assemble one obligation's facts from the preloaded maps."""
-    (obligation_id, clinician_id, _practice_id, otype, state, _payer,
-     severity, window_opens, rule_version) = row
+    (
+        obligation_id,
+        clinician_id,
+        _practice_id,
+        otype,
+        state,
+        _payer,
+        severity,
+        window_opens,
+        rule_version,
+    ) = row
     state = str(state).strip() if state is not None else None
 
     entry = support.get((clinician_id, otype, state)) or support.get((clinician_id, otype, None))

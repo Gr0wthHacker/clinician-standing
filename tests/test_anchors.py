@@ -134,11 +134,11 @@ def test_resolve_anchor_missing_basis_falls_back_to_credential() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def _rule(state, lt, key, *, num=None, flag=None, jsonv=None, version=1):  # noqa: ANN001, ANN201
+def _rule(state, lt, key, *, num=None, flag=None, jsonv=None, version=1):
     return eng.Rule(state, lt, key, num, flag, None, version, value_json=jsonv)
 
 
-def _roster(rules: dict[str, object], *, expiry: date | None, issue: date | None):  # noqa: ANN001
+def _roster(rules: dict[str, object], *, expiry: date | None, issue: date | None):
     state, lt = "CT", "RN"
     aff = eng.Affiliation(clinician_id=CLINICIAN, practice_id=PRACTICE, is_billing=True, tier=None)
     lic = eng.License(
@@ -157,7 +157,7 @@ def _roster(rules: dict[str, object], *, expiry: date | None, issue: date | None
     )
 
 
-def _due(specs, obligation_type):  # noqa: ANN001
+def _due(specs, obligation_type):
     match = [s for s in specs if s.obligation_type == obligation_type]
     assert match, f"no {obligation_type} spec was planned"
     return match[0].due_date
@@ -184,9 +184,7 @@ def test_de_style_csr_uses_issue_offset() -> None:
     """An issue-offset CSR clock is dated from the licence issue, then rolled."""
     rules = {
         "csr_required": _rule("CT", "RN", "csr_required", flag=True),
-        "csr_anchor": _rule(
-            "CT", "RN", "csr_anchor", jsonv={"basis": "issue", "offset_months": 6}
-        ),
+        "csr_anchor": _rule("CT", "RN", "csr_anchor", jsonv={"basis": "issue", "offset_months": 6}),
     }
     # issue 2025-03-15 + 6 months = 2025-09-15; one 12-month cycle rolls it to
     # 2026-09-15, three days before AS_OF, so it surfaces as just past due.

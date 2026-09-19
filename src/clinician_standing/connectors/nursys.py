@@ -460,7 +460,7 @@ class NursysAccount:
         last_notification_at: Watermark for Notification Lookup.
     """
 
-    __slots__ = ("id", "label", "auth_ref", "password_set_at", "last_notification_at")
+    __slots__ = ("auth_ref", "id", "label", "last_notification_at", "password_set_at")
 
     def __init__(
         self,
@@ -556,9 +556,7 @@ class NursysConnector(Connector):
         self.log.info("nursys: %s license notifications across %s accounts", total, len(accounts))
         return out_path
 
-    def _fetch_account(
-        self, account: NursysAccount, ncsbn_ids: list[int], handle: Any
-    ) -> int:
+    def _fetch_account(self, account: NursysAccount, ncsbn_ids: list[int], handle: Any) -> int:
         """Fetch one account's licences, writing NDJSON rows. Returns the count.
 
         First run for an account (no watermark): a Nurse Lookup baseline over

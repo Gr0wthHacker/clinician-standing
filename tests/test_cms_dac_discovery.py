@@ -14,8 +14,8 @@ from conftest import require
 
 try:  # pragma: no cover - the module is the subject of the test
     from clinician_standing.config import Settings
-    from clinician_standing.connectors.cms_dac import CmsDacConnector
     from clinician_standing.connectors.base import ConnectorError
+    from clinician_standing.connectors.cms_dac import CmsDacConnector
 except ImportError:  # pragma: no cover
     CmsDacConnector = None  # type: ignore[assignment]
 
@@ -27,7 +27,7 @@ CSV_URL = (
 )
 
 
-def _connector(document: object):  # noqa: ANN202 - test helper
+def _connector(document: object):
     c = CmsDacConnector(Settings())
     c.fetch_json = lambda _url: document  # type: ignore[method-assign]
     return c
@@ -36,9 +36,12 @@ def _connector(document: object):  # noqa: ANN202 - test helper
 @needs_dac
 def test_flat_distribution_shape_resolves() -> None:
     # The shape the live metastore item returns today.
-    doc = {"modified": "2026-09-01", "distribution": [
-        {"@type": "dcat:Distribution", "mediaType": "text/csv", "downloadURL": CSV_URL},
-    ]}
+    doc = {
+        "modified": "2026-09-01",
+        "distribution": [
+            {"@type": "dcat:Distribution", "mediaType": "text/csv", "downloadURL": CSV_URL},
+        ],
+    }
     assert _connector(doc).discover_download_url() == CSV_URL
 
 
@@ -51,9 +54,11 @@ def test_nested_data_shape_still_resolves() -> None:
 
 @needs_dac
 def test_non_csv_distribution_is_skipped() -> None:
-    doc = {"distribution": [
-        {"mediaType": "application/pdf", "downloadURL": "https://data.cms.gov/x.pdf"},
-    ]}
+    doc = {
+        "distribution": [
+            {"mediaType": "application/pdf", "downloadURL": "https://data.cms.gov/x.pdf"},
+        ]
+    }
     with pytest.raises(ConnectorError):
         _connector(doc).discover_download_url()
 

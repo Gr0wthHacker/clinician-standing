@@ -50,6 +50,7 @@ from .db import connect, fetch_all, transaction
 
 __all__ = [
     "CE_CLOSING_DAYS",
+    "CLOSEABLE_ON_ROSTER_SHRINK",
     "DEFAULTS",
     "DUTY_FIELD_KEYS",
     "ELEVATED_WINDOW_DAYS",
@@ -59,7 +60,6 @@ __all__ = [
     "TIER_RANK",
     "UPSERT_SQL",
     "AnchorRule",
-    "CLOSEABLE_ON_ROSTER_SHRINK",
     "EngineResult",
     "ObligationSpec",
     "Roster",

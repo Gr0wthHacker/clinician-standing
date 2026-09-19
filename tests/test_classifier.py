@@ -27,28 +27,28 @@ OID = UUID("00000000-0000-4000-8000-000000000001")
 EVID = UUID("eeeeeeee-0000-4000-8000-000000000001")
 
 
-def facts(**over: object):  # noqa: ANN201 - a test factory
+def facts(**over: object):
     """A fully-verified, routine, not-yet-actionable license_renewal.
 
     By default every PRD 8.1 condition holds and there is no work to do, so it
     auto-clears. Each test overrides exactly the field it is about.
     """
-    base = dict(
-        obligation_id=OID,
-        obligation_type="license_renewal",
-        severity="routine",
-        actionable=False,
-        has_primary_evidence=True,
-        evidence_fresh=True,
-        strong_single_match=True,
-        has_conflict=False,
-        rule_current=True,
-        open_conflict=False,
-        exclusion_hit=False,
-        lapsed_while_billing=False,
-        terms_lapsed=False,
-        evidence_id=EVID,
-    )
+    base = {
+        "obligation_id": OID,
+        "obligation_type": "license_renewal",
+        "severity": "routine",
+        "actionable": False,
+        "has_primary_evidence": True,
+        "evidence_fresh": True,
+        "strong_single_match": True,
+        "has_conflict": False,
+        "rule_current": True,
+        "open_conflict": False,
+        "exclusion_hit": False,
+        "lapsed_while_billing": False,
+        "terms_lapsed": False,
+        "evidence_id": EVID,
+    }
     base.update(over)
     return clf.ObligationFacts(**base)  # type: ignore[arg-type]
 

@@ -85,9 +85,7 @@ def stale_source_keys(
     return select_stale_keys(fetch_all(conn, _QUERY_SOURCE_FRESHNESS), keys, now)
 
 
-def refresh_stale(
-    settings: Settings | None = None, *, dry_run: bool = False
-) -> list[RunResult]:
+def refresh_stale(settings: Settings | None = None, *, dry_run: bool = False) -> list[RunResult]:
     """Re-ingest every stale source once. Returns each run's result.
 
     A dry run reports which sources would be refreshed and runs the connectors in

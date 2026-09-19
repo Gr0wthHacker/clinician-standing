@@ -24,6 +24,7 @@ store (seven-year retention) and never into a migration or a Lovable file
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -174,10 +175,8 @@ class SecretStore:
             tmp.write_text(credential.to_json(), encoding="utf-8")
             os.replace(tmp, path)
             # 0600 where the platform honours it; a best effort, not a guarantee.
-            try:
+            with contextlib.suppress(OSError):  # pragma: no cover - platform dependent
                 os.chmod(path, 0o600)
-            except OSError:  # pragma: no cover - platform dependent
-                pass
         except OSError as exc:
             raise SecretError(
                 f"could not persist credential for {auth_ref!r} at {path}: {exc}"

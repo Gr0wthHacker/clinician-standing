@@ -31,8 +31,8 @@ from typing import Any
 import psycopg
 
 from .audit import PracticeNotFound, audit_practice, render_html, render_json, render_markdown
-from .config import REQUIRED_TABLES, ConfigError, get_settings
 from .classifier import run as run_classifier_pass
+from .config import REQUIRED_TABLES, ConfigError, get_settings
 from .connectors import CONNECTORS, RunResult, connector_keys, get_connector
 from .connectors.nursys import rotate_account_passwords
 from .db import connect, fetch_all, missing_tables

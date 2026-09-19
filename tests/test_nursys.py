@@ -10,7 +10,7 @@ validation, the async submit/poll, and credential rotation persistence.
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import pytest
 
@@ -189,7 +189,7 @@ class _FakeResponse:
     def __init__(self, body: object) -> None:
         self._body = json.dumps(body).encode("utf-8") if body is not None else b""
 
-    def __enter__(self) -> "_FakeResponse":
+    def __enter__(self) -> _FakeResponse:
         return self
 
     def __exit__(self, *exc: object) -> None:
@@ -207,7 +207,7 @@ class _FakeTransport:
         self.change_password_body: dict | None = None
         self.last_post_body: dict | None = None
 
-    def __call__(self, request, timeout=None):  # noqa: ANN001 - urlopen shape
+    def __call__(self, request, timeout=None):
         method = request.get_method()
         url = request.full_url
         self.calls.append((method, url))
@@ -272,7 +272,7 @@ def test_client_change_password_sends_new_password() -> None:
 
 
 class _RateLimitTransport:
-    def __call__(self, request, timeout=None):  # noqa: ANN001
+    def __call__(self, request, timeout=None):
         import urllib.error
 
         raise urllib.error.HTTPError(request.full_url, 403, "Forbidden", {}, None)
@@ -305,14 +305,14 @@ def test_credential_rotated_advances_timestamp() -> None:
     assert cred.password == "old"  # original is untouched (frozen)
 
 
-def test_secret_store_put_then_get(tmp_path) -> None:  # noqa: ANN001
+def test_secret_store_put_then_get(tmp_path) -> None:
     store = SecretStore(root=tmp_path)
     cred = NursysCredential("https://h/x", "u", "p", password_set_at=datetime.now(UTC))
     store.put_nursys("nursys/acct_1", cred)
     assert store.get_nursys("nursys/acct_1") == cred
 
 
-def test_secret_store_file_wins_over_env(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+def test_secret_store_file_wins_over_env(tmp_path, monkeypatch) -> None:
     auth_ref = "nursys/acct_2"
     boot = NursysCredential("https://h/x", "u", "bootstrap")
     monkeypatch.setenv(env_var_for(auth_ref), boot.to_json())
@@ -324,6 +324,6 @@ def test_secret_store_file_wins_over_env(tmp_path, monkeypatch) -> None:  # noqa
     assert store.get_nursys(auth_ref).password == "rotated"
 
 
-def test_secret_store_missing_raises(tmp_path) -> None:  # noqa: ANN001
+def test_secret_store_missing_raises(tmp_path) -> None:
     with pytest.raises(SecretError):
         SecretStore(root=tmp_path).get_nursys("nursys/absent")
