@@ -630,6 +630,15 @@ class CmsDacConnector(Connector):
                 practices = cur.rowcount
                 cur.execute(_UPSERT_CLINICIANS)
                 clinicians = cur.rowcount
+                # Give the planner real statistics on the just-upserted tables
+                # before the affiliations join reads them. practices and
+                # clinicians took ~2M rows in THIS transaction and have never
+                # been analyzed, so without this the join runs against zero-row
+                # estimates and the planner picks a plan that does not finish --
+                # observed at over 3.5 hours on the 2.0M-pair first load, versus
+                # seconds once the stats are present.
+                cur.execute("analyze clinicians")
+                cur.execute("analyze practices")
                 cur.execute(_INSERT_AFFILIATIONS)
                 affiliations = cur.rowcount
                 cur.execute(_END_AFFILIATIONS)
