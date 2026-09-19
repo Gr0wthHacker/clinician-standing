@@ -31,14 +31,7 @@ from uuid import UUID
 
 import pytest
 
-from conftest import require
-
-try:  # pragma: no cover - the module is the subject of the test
-    from clinician_standing import engine as eng
-except ImportError:  # pragma: no cover
-    eng = None  # type: ignore[assignment]
-
-needs_engine = require("clinician_standing.engine", "run")
+from clinician_standing import engine as eng
 
 MIGRATIONS = Path(__file__).resolve().parents[1] / "db" / "migrations"
 
@@ -372,7 +365,6 @@ def fetch_obligations(conn, **where):
 # ===========================================================================
 # Pure unit tests -- no database
 # ===========================================================================
-@needs_engine
 def test_add_months_clamps_to_end_of_month():
     """31 January plus one month is 28 February, not an error and not 3 March."""
     assert eng.add_months(date(2026, 1, 31), 1) == date(2026, 2, 28)
@@ -382,7 +374,6 @@ def test_add_months_clamps_to_end_of_month():
     assert eng.month_end(date(2026, 2, 3)) == date(2026, 2, 28)
 
 
-@needs_engine
 def test_compute_due_date_from_an_existing_credential_row():
     """With an expiry date, the duty is due then and opens a window before it."""
     rules = eng.RuleSet("TX", "MD", {})
@@ -391,7 +382,6 @@ def test_compute_due_date_from_an_existing_credential_row():
     assert window == date(2027, 4, 30) - timedelta(days=90)
 
 
-@needs_engine
 def test_compute_due_date_without_a_credential_row_is_the_act_of_establishing_one():
     """No credential row means the obligation is to create one, actionable now."""
     rules = eng.RuleSet("TX", "MD", {})
@@ -400,7 +390,6 @@ def test_compute_due_date_without_a_credential_row_is_the_act_of_establishing_on
     assert window == AS_OF
 
 
-@needs_engine
 def test_compute_due_date_leaves_a_past_due_date_in_the_past():
     """A lapse is a finding. Rolling it forward would hide it from severity."""
     rules = eng.RuleSet("TX", "MD", {})
@@ -408,7 +397,6 @@ def test_compute_due_date_leaves_a_past_due_date_in_the_past():
     assert due < AS_OF
 
 
-@needs_engine
 def test_rule_version_is_the_highest_contributing_version():
     """A duty's rule_version traces to the newest rule that shaped it."""
     rules = eng.RuleSet(
@@ -427,7 +415,6 @@ def test_rule_version_is_the_highest_contributing_version():
     assert rules.version_for("ce_cycle") is None
 
 
-@needs_engine
 @pytest.mark.parametrize(
     ("kwargs", "expected"),
     [
@@ -445,7 +432,6 @@ def test_severity_assignment_follows_prd_section_7(kwargs, expected):
     assert severity == expected
 
 
-@needs_engine
 def test_revalidation_past_due_is_critical_but_a_past_due_screen_is_not():
     """Only revalidation is called out as critical when past due (PRD 7)."""
     severity, reason = eng.severity_for(
@@ -458,7 +444,6 @@ def test_revalidation_past_due_is_critical_but_a_past_due_screen_is_not():
     assert severity == "routine"
 
 
-@needs_engine
 def test_monthly_exclusion_screen_is_not_permanently_elevated():
     """See the INTERPRETATION note in severity_for.
 
@@ -480,7 +465,6 @@ def test_monthly_exclusion_screen_is_not_permanently_elevated():
     assert severity == "elevated"
 
 
-@needs_engine
 def test_priority_ordering_returns_the_expected_sequence():
     """PRD 7: severity, then days-to-due ascending, then billing, then tier.
 
@@ -517,7 +501,6 @@ def test_priority_ordering_returns_the_expected_sequence():
     assert [s.obligation_type for s in ordered] == ["a", "b", "c", "d", "e", "f", "g"]
 
 
-@needs_engine
 def test_plan_is_deduplicated_on_the_open_duty_key():
     """Two facilities, one reappointment duty: the earlier date wins.
 
@@ -546,7 +529,6 @@ def test_plan_is_deduplicated_on_the_open_duty_key():
 # Database tests
 # ===========================================================================
 @pytest.mark.database
-@needs_engine
 def test_twenty_clinicians_two_states_make_a_twelve_month_calendar(seeded):
     """PRD 14 Phase 4 acceptance, verbatim.
 
@@ -603,7 +585,6 @@ def test_twenty_clinicians_two_states_make_a_twelve_month_calendar(seeded):
 
 
 @pytest.mark.database
-@needs_engine
 def test_running_twice_produces_no_duplicates(seeded):
     """The ``ux_obligations_open_duty`` test.
 
@@ -650,7 +631,6 @@ def test_running_twice_produces_no_duplicates(seeded):
 
 
 @pytest.mark.database
-@needs_engine
 def test_the_upsert_targets_the_open_duty_index_and_nothing_else(seeded):
     """The conflict target is the contract with 0005, so state it out loud.
 
@@ -718,7 +698,6 @@ def test_the_upsert_targets_the_open_duty_index_and_nothing_else(seeded):
 
 
 @pytest.mark.database
-@needs_engine
 def test_a_requirements_version_bump_moves_the_due_date_in_place(seeded):
     """A new rule version moves the open duty; it does not fork a second one.
 
@@ -755,7 +734,6 @@ def test_a_requirements_version_bump_moves_the_due_date_in_place(seeded):
 
 
 @pytest.mark.database
-@needs_engine
 def test_expired_licence_is_critical_only_while_billing(seeded):
     """PRD 7: "license expired or suspended while ``is_billing`` is true".
 
@@ -788,7 +766,6 @@ def test_expired_licence_is_critical_only_while_billing(seeded):
 
 
 @pytest.mark.database
-@needs_engine
 def test_the_queue_comes_back_in_priority_order(seeded):
     """PRD 7 ordering, end to end, against rows the engine actually wrote."""
     result = eng.run(seeded, as_of=AS_OF, generated_at=GENERATED_AT)
@@ -832,7 +809,6 @@ def test_the_queue_comes_back_in_priority_order(seeded):
 
 
 @pytest.mark.database
-@needs_engine
 def test_dry_run_writes_nothing_but_reports_what_it_would_do(seeded):
     """``engine run --dry-run``: the plan, the counts, and an untouched table."""
     dry = eng.run(seeded, as_of=AS_OF, dry_run=True, generated_at=GENERATED_AT)
@@ -853,7 +829,6 @@ def test_dry_run_writes_nothing_but_reports_what_it_would_do(seeded):
 
 
 @pytest.mark.database
-@needs_engine
 def test_a_completed_obligation_lets_the_next_cycle_insert_cleanly(seeded):
     """Terminal rows drop out of the index predicate, by design (0005).
 
@@ -885,7 +860,6 @@ def test_a_completed_obligation_lets_the_next_cycle_insert_cleanly(seeded):
 
 
 @pytest.mark.database
-@needs_engine
 def test_an_exclusion_hit_makes_the_screen_critical(seeded):
     """PRD 7's first critical condition, and PRD 8.3's HIGH_CONSEQUENCE."""
     cid = clinician_id(4)
@@ -913,7 +887,6 @@ def test_an_exclusion_hit_makes_the_screen_critical(seeded):
 
 
 @pytest.mark.database
-@needs_engine
 def test_an_ended_affiliation_generates_nothing(seeded):
     """PRD 7 loops over ACTIVE affiliations: end_date null or in the future."""
     cid = clinician_id(7)

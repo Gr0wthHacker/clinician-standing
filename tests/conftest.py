@@ -19,7 +19,6 @@ environment fact rather than a statement about whether the code exists.
 from __future__ import annotations
 
 import csv
-import importlib
 import os
 from collections.abc import Iterator
 from pathlib import Path
@@ -41,30 +40,6 @@ MANAGED_ENV_VARS = (
     "NURSYS_API_KEY",
     "FSMB_API_KEY",
 )
-
-
-# --------------------------------------------------------------------------
-# require() -- retained as a call-site shim, WITHOUT the skip.
-#
-# This used to return `pytest.mark.skip` when a module or attribute was
-# missing. Keeping the name but not the behaviour is deliberate: the import now
-# happens for real, so a package that will not import raises ImportError at
-# collection time and the suite goes red, and a missing attribute raises
-# AttributeError. Neither is a skip. New tests should import what they test
-# directly and not call this at all.
-# --------------------------------------------------------------------------
-def require(module_name: str, *attrs: str) -> pytest.MarkDecorator:
-    """Assert a module and its attributes exist, and return a no-op marker.
-
-    Raises:
-        ImportError: If the module does not import. Not caught: a broken
-            package must fail the suite, not silently disable it.
-        AttributeError: If none of ``attrs`` is present on the module.
-    """
-    module = importlib.import_module(module_name)
-    if attrs and not any(hasattr(module, name) for name in attrs):
-        raise AttributeError(f"{module_name} has none of {attrs}")
-    return pytest.mark.skipif(False, reason="module present")
 
 
 # --------------------------------------------------------------------------

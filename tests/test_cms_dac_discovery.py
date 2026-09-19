@@ -10,8 +10,6 @@ from __future__ import annotations
 
 import pytest
 
-from conftest import require
-
 try:  # pragma: no cover - the module is the subject of the test
     from clinician_standing.config import Settings
     from clinician_standing.connectors.base import ConnectorError
@@ -19,7 +17,6 @@ try:  # pragma: no cover - the module is the subject of the test
 except ImportError:  # pragma: no cover
     CmsDacConnector = None  # type: ignore[assignment]
 
-needs_dac = require("clinician_standing.connectors.cms_dac", "CmsDacConnector")
 
 CSV_URL = (
     "https://data.cms.gov/provider-data/sites/default/files/resources/"
@@ -33,7 +30,6 @@ def _connector(document: object):
     return c
 
 
-@needs_dac
 def test_flat_distribution_shape_resolves() -> None:
     # The shape the live metastore item returns today.
     doc = {
@@ -45,14 +41,12 @@ def test_flat_distribution_shape_resolves() -> None:
     assert _connector(doc).discover_download_url() == CSV_URL
 
 
-@needs_dac
 def test_nested_data_shape_still_resolves() -> None:
     # The reference-expanded shape, kept working for backward compatibility.
     doc = {"distribution": [{"data": {"mediaType": "text/csv", "downloadURL": CSV_URL}}]}
     assert _connector(doc).discover_download_url() == CSV_URL
 
 
-@needs_dac
 def test_non_csv_distribution_is_skipped() -> None:
     doc = {
         "distribution": [
@@ -63,7 +57,6 @@ def test_non_csv_distribution_is_skipped() -> None:
         _connector(doc).discover_download_url()
 
 
-@needs_dac
 def test_csv_by_extension_when_media_type_absent() -> None:
     doc = {"distribution": [{"downloadURL": CSV_URL}]}
     assert _connector(doc).discover_download_url() == CSV_URL
