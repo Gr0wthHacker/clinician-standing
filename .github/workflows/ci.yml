@@ -149,12 +149,13 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
-          cache-dependency-path: pyproject.toml
+          cache-dependency-path: requirements-dev.txt
 
       - name: Install package and dev tooling
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
+          python -m pip install --require-hashes -r requirements-dev.txt
+          python -m pip install -e . --no-deps
 
       # Applied migrations are immutable and numbers strictly increase; a PR that
       # edits a merged migration or reuses a number fails here.
