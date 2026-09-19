@@ -72,6 +72,17 @@ __all__ = [
 ]
 
 
+def _utc_date(dt: datetime | None) -> str | None:
+    """The UTC calendar date of ``dt``, ISO-formatted, or None.
+
+    ``evidence.fetched_at`` is a ``timestamptz``; psycopg returns it in the
+    connection's timezone, so ``.date()`` alone rolls a small-hours UTC timestamp
+    back a day and would print the wrong snapshot date on a compliance document.
+    Normalizing to UTC first keeps every rendered date on the PRD's all-UTC rule.
+    """
+    return dt.astimezone(UTC).date().isoformat() if dt is not None else None
+
+
 # ---------------------------------------------------------------------------
 # Regulatory constants
 # ---------------------------------------------------------------------------
@@ -173,7 +184,7 @@ class SourceState:
         name = self.display_name or self.key
         if self.fetched_at is None:
             return f"{name} (never ingested)"
-        return f"{name}, fetched {self.fetched_at.date().isoformat()}"
+        return f"{name}, fetched {_utc_date(self.fetched_at)}"
 
 
 @dataclass(frozen=True)
@@ -747,7 +758,7 @@ def exclusion_caveat(screen: ExclusionScreen) -> str:
     source = screen.leie_source
     if source is not None and source.stale and source.fetched_at is not None:
         sentences.append(
-            f"The LEIE snapshot screened was fetched {source.fetched_at.date().isoformat()}, "
+            f"The LEIE snapshot screened was fetched {_utc_date(source.fetched_at)}, "
             f"{_days(source.age_days or 0)} ago, past this system's "
             f"{_day_span(source.freshness_sla_days)} freshness limit; exclusions published "
             f"since then are not represented."
@@ -784,7 +795,7 @@ def sam_caveat(screen: ExclusionScreen) -> str:
     if screen.sam_screened:
         return (
             f"SAM.gov was screened against the snapshot fetched "
-            f"{sam.fetched_at.date().isoformat() if sam.fetched_at else 'unknown'}. "
+            f"{_utc_date(sam.fetched_at) or 'unknown'}. "
             "SAM.gov exclusion records are matched on name and organization, not on NPI; "
             "a SAM.gov result is therefore weaker evidence of identity than an NPI match."
         )
@@ -967,7 +978,7 @@ def _build_directory(
     if dac and dac.ingested and stale:
         stale_note = (
             f"The directory snapshot these values come from was fetched "
-            f"{dac.fetched_at.date().isoformat() if dac.fetched_at else 'unknown'}, "
+            f"{_utc_date(dac.fetched_at) or 'unknown'}, "
             f"{_days(dac.age_days or 0)} ago, against a "
             f"{_day_span(dac.freshness_sla_days)} freshness limit. Any address, telephone "
             f"number or roster change CMS published since then is not reflected below."
