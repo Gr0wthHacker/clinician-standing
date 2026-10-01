@@ -255,9 +255,19 @@ select distinct npi from stg_cms_dac where npi <> ''
 # the natural unique key (clinician_id, practice_id, start_date) cannot be used
 # as a conflict target: in SQL, null never conflicts with null. An explicit
 # NOT EXISTS on the open affiliation is the guard instead.
-_INSERT_AFFILIATIONS = """
-insert into affiliations (id, clinician_id, practice_id, is_billing)
-select gen_random_uuid(), c.id, p.id, true
+#
+# The new pairs are computed into their own temp table BEFORE the insert. As one
+# `insert ... where not exists (select from affiliations)` statement this was
+# quadratic on a first load: affiliations is empty, its statistics say so, and
+# the planner chose a nested-loop anti join with a sequential scan of
+# affiliations on the inner side. The rows the INSERT writes are invisible to
+# that scan but sit on the heap pages it reads, so each of ~2M outer rows
+# rescanned everything inserted so far. Measured on the September 2026 file it
+# ran past ten minutes and was killed. Split, the anti join reads a table that
+# is not growing underneath it.
+_CREATE_NEW_AFFILIATIONS = """
+create temporary table stg_dac_new_affiliations on commit drop as
+select c.id as clinician_id, p.id as practice_id
 from stg_dac_pairs s
 join clinicians c on c.npi = s.npi
 join practices  p on p.org_pac_id = s.org_pac_id
@@ -265,6 +275,12 @@ where not exists (
     select 1 from affiliations a
     where a.clinician_id = c.id and a.practice_id = p.id and a.end_date is null
 )
+"""
+
+_INSERT_AFFILIATIONS = """
+insert into affiliations (id, clinician_id, practice_id, is_billing)
+select gen_random_uuid(), clinician_id, practice_id, true
+from stg_dac_new_affiliations
 """
 
 # CLOSING AFFILIATIONS THAT LEFT THE FILE.
@@ -683,6 +699,7 @@ class CmsDacConnector(Connector):
                 practices = cur.rowcount
                 cur.execute(_UPSERT_CLINICIANS)
                 clinicians = cur.rowcount
+                cur.execute(_CREATE_NEW_AFFILIATIONS)
                 cur.execute(_INSERT_AFFILIATIONS)
                 affiliations = cur.rowcount
                 cur.execute(_END_AFFILIATIONS)
