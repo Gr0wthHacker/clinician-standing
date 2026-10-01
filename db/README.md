@@ -65,6 +65,7 @@ references an object a later file creates.
 | `0010_source_attestation.sql` | `sources.attests_obligation_types`; corrects `is_primary_source` | 6, 8.1 |
 | `0011_ingest_role.sql` | `app_ingest` login role; `FORCE ROW LEVEL SECURITY` on all 16 tables | 12 |
 | `0012_enrollment_status_view.sql` | `enrollments_current` — enrollment status derived at read time | 7 |
+| `0016_directory_reference.sql` | Directory layer: `nppes_providers`, `facilities`, `clinician_facility_affiliations`, the `clinician_directory` view, DAC school/year columns | 6 |
 
 `evidence` is defined in `0002` rather than `0005` because the credential tables
 in `0003` carry a `NOT NULL` foreign key to it, and migrations may not reference
