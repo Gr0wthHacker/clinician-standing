@@ -14,6 +14,26 @@ CI foundation that made it verifiable (WP0.1) and a bug that surfaced with it.
   CI installs `--require-hashes`.
 
 ### Features
+- **Directory layer** (`0016_directory_reference.sql`). Three new connectors
+  for the public data commercial provider directories are built on, landing in
+  reference tables that never drive obligations:
+  - `nppes` -- the NPPES full replicate (V.2), discovered from the NPPES
+    downloads page and read straight out of the zip. Taxonomy slots with
+    self-reported license numbers and states, practice address, authorized
+    official, deactivation status. Deactivation stubs keep the stored name and
+    taxonomy. EIN and parent-organization TIN are not loaded.
+  - `cms_hospitals` -- Hospital General Information, naming CCNs.
+  - `cms_facility_affiliation` -- CMS Facility Affiliation Data: clinician to
+    hospital, nursing home, home health, hospice, IRF, LTCH and dialysis
+    facility, with DAC-style open/close semantics.
+  - `clinician_directory` view joins all of it to the roster.
+- **DAC enrichment** -- `cms_dac` now keeps `Med_sch`, `Grd_yr` and
+  `sec_spec_all` as `clinicians.medical_school`, `graduation_year` and
+  `secondary_specialties`. Optional columns: CMS dropping one costs that column,
+  not the run. The content hash now includes them, so **the first DAC run after
+  this ships reports every row as changed** and reloads once; that is expected.
+- `parse.decode_lines` (UTF-8 with per-line latin-1 fallback) and
+  `Connector.fetch_text` (allowlisted fetch of an HTML index page).
 - **Nursys e-Notify connector** — consumption-only (no PII), `SecretStore`,
   90-day password rotation, `nursys rotate`, migration `0013_nursys.sql`.
 - **Clock anchors** — `renewal_anchor` / `csr_anchor` / `ce_anchor` in the rules
@@ -25,6 +45,11 @@ CI foundation that made it verifiable (WP0.1) and a bug that surfaced with it.
   SLA (SOURCE_STALE automatic re-fetch).
 
 ### Fixes
+- **DAC first load** -- the affiliation insert was quadratic on an empty
+  `affiliations` table (nested-loop anti join scanning the heap it was writing).
+  The first load of the September 2026 file stalled past ten minutes on that
+  statement; with the anti join split into its own temp table the whole DAC
+  load takes about six minutes.
 - **DAC discovery** — handle the CMS metastore's flat distribution shape; the
   monthly DAC ingest would otherwise fail at discovery on the live API.
 - **Audit fetch dates** — render evidence fetch dates in UTC (were local tz, off
