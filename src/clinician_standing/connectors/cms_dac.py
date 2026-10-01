@@ -3,7 +3,9 @@
 Roughly 839 MB and 3.39M lines, refreshed monthly. It is the identity spine of
 the whole system: it carries NPI, the individual PAC ID and enrollment ID, the
 group PAC ID that every other CMS file joins on, credential, primary specialty,
-practice name, address and phone.
+practice name, address and phone. It also carries medical school, graduation
+year and secondary specialties, which are kept as directory enrichment (0016)
+but are optional: losing one costs that column, never the run.
 
 Two things about this file decide whether downstream numbers are right:
 
@@ -62,6 +64,9 @@ COL_CITY = "City/Town"
 COL_STATE = "State"
 COL_ZIP = "ZIP Code"
 COL_PHONE = "Telephone Number"
+COL_MED_SCH = "Med_sch"
+COL_GRD_YR = "Grd_yr"
+COL_SEC_SPEC_ALL = "sec_spec_all"
 
 REQUIRED_COLUMNS: tuple[str, ...] = (
     COL_NPI,
@@ -80,6 +85,12 @@ REQUIRED_COLUMNS: tuple[str, ...] = (
     COL_ZIP,
     COL_PHONE,
 )
+
+#: Enrichment columns: read when present, never required. These feed the
+#: directory layer (0016) and Whitecoat's school-level analysis, not the roster
+#: spine, so CMS dropping or renaming one must cost those columns, not the whole
+#: monthly ingest. Their absence is logged once per run.
+OPTIONAL_COLUMNS: tuple[str, ...] = (COL_MED_SCH, COL_GRD_YR, COL_SEC_SPEC_ALL)
 
 #: ``Cred`` value -> ``clinicians.clinician_type``. Everything unmapped becomes
 #: ``other``; the file carries dozens of allied-health credentials (PT, OT, CSW,
@@ -121,6 +132,9 @@ STAGING_COLUMNS: tuple[str, ...] = (
     "state",
     "zip",
     "phone",
+    "medical_school",
+    "graduation_year",
+    "secondary_specialties",
 )
 
 _CREATE_STAGING = """
@@ -144,7 +158,10 @@ create temporary table stg_cms_dac (
     city              text,
     state             text,
     zip               text,
-    phone             text
+    phone             text,
+    medical_school    text,
+    graduation_year   smallint,
+    secondary_specialties text
 ) on commit drop
 """
 
@@ -192,12 +209,14 @@ on conflict (org_pac_id) do update set
 _UPSERT_CLINICIANS = """
 insert into clinicians (
     id, npi, ind_pac_id, ind_enrl_id, first_name, last_name, middle_name, suffix,
-    credential, clinician_type, primary_specialty
+    credential, clinician_type, primary_specialty, medical_school, graduation_year,
+    secondary_specialties
 )
 select distinct on (s.npi)
     gen_random_uuid(), s.npi, s.ind_pac_id, s.ind_enrl_id, s.first_name, s.last_name,
     s.middle_name, s.suffix, nullif(s.credential, ''), s.clinician_type,
-    nullif(s.primary_specialty, '')
+    nullif(s.primary_specialty, ''), s.medical_school, s.graduation_year,
+    s.secondary_specialties
 from stg_cms_dac s
 where s.npi is not null and s.npi <> ''
 order by s.npi, s.num_org_mem desc nulls last, s.org_pac_id nulls last
@@ -210,7 +229,11 @@ on conflict (npi) do update set
     suffix            = coalesce(excluded.suffix, clinicians.suffix),
     credential        = coalesce(excluded.credential, clinicians.credential),
     clinician_type    = excluded.clinician_type,
-    primary_specialty = coalesce(excluded.primary_specialty, clinicians.primary_specialty)
+    primary_specialty = coalesce(excluded.primary_specialty, clinicians.primary_specialty),
+    medical_school    = coalesce(excluded.medical_school, clinicians.medical_school),
+    graduation_year   = coalesce(excluded.graduation_year, clinicians.graduation_year),
+    secondary_specialties =
+        coalesce(excluded.secondary_specialties, clinicians.secondary_specialties)
 """
 
 # The (clinician, practice) pairs the current file asserts, and the clinicians
@@ -307,6 +330,19 @@ def _state(value: str | None) -> str | None:
     return code if STATE_PATTERN.match(code) else None
 
 
+def _graduation_year(value: str | None) -> int | None:
+    """Parse ``Grd_yr`` into a year, or None.
+
+    clinicians.graduation_year carries a 1900-2100 CHECK; a stray value would
+    abort the two-million-row load, so anything outside it is dropped here.
+    """
+    raw = _clean(value)
+    if len(raw) != 4 or not raw.isdigit():
+        return None
+    year = int(raw)
+    return year if 1900 <= year <= 2100 else None
+
+
 def _clinician_type(credential: str, specialty: str) -> str:
     """Map CMS credential/specialty onto ``clinicians.clinician_type``."""
     mapped = CREDENTIAL_TO_TYPE.get(credential.upper())
@@ -345,6 +381,7 @@ class CmsDacConnector(Connector):
         self.distribution_version: str | None = None
         self.rows_before_dedupe: int = 0
         self.rows_rejected: int = 0
+        self.missing_optional_columns: list[str] = []
 
     # ----------------------------------------------------------------- fetch
 
@@ -446,6 +483,15 @@ class CmsDacConnector(Connector):
                 raise ConnectorError(
                     f"DAC header changed; missing columns {missing}. Saw: {reader.fieldnames}"
                 )
+            self.missing_optional_columns = [
+                c for c in OPTIONAL_COLUMNS if c not in (reader.fieldnames or [])
+            ]
+            if self.missing_optional_columns:
+                self.log.warning(
+                    "DAC header no longer carries %s; those clinician columns keep their "
+                    "previous values this run",
+                    self.missing_optional_columns,
+                )
             for raw in reader:
                 self.rows_before_dedupe += 1
                 npi = _clean(raw.get(COL_NPI))
@@ -488,6 +534,9 @@ class CmsDacConnector(Connector):
                     "state": _state(raw.get(COL_STATE)),
                     "zip": _clean(raw.get(COL_ZIP)) or None,
                     "phone": _clean(raw.get(COL_PHONE)) or None,
+                    "medical_school": _clean(raw.get(COL_MED_SCH)) or None,
+                    "graduation_year": _graduation_year(raw.get(COL_GRD_YR)),
+                    "secondary_specialties": _clean(raw.get(COL_SEC_SPEC_ALL)) or None,
                 }
 
     def identity_key(self, row: dict[str, Any]) -> str:
@@ -515,6 +564,9 @@ class CmsDacConnector(Connector):
             row.get("state"),
             row.get("zip"),
             row.get("phone"),
+            row.get("medical_school"),
+            row.get("graduation_year"),
+            row.get("secondary_specialties"),
         )
 
     # ------------------------------------------------------------------ load
@@ -575,6 +627,7 @@ class CmsDacConnector(Connector):
                     "rows_rejected_bad_npi": self.rows_rejected,
                     "rows_after_dedupe": diff.rows_in,
                     "dedupe_key": ["NPI", "org_pac_id"],
+                    "missing_optional_columns": self.missing_optional_columns,
                     "rows_new": diff.rows_new,
                     "rows_changed": diff.rows_changed,
                 },
