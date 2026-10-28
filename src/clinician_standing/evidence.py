@@ -222,6 +222,18 @@ insert into evidence (
 """
 
 
+def _dumps(obj: Any) -> str:
+    """JSON for jsonb columns, rendering dates and UUIDs as ISO strings.
+
+    psycopg's ``Jsonb`` uses plain ``json.dumps``, which raises on ``date``.
+    The LEIE connector's per-match record carries ``exclusion_date`` and
+    ``reinstatement_date`` as dates, so every run that matched a roster NPI
+    failed at this insert and recorded no sanction. ``default=str`` matches
+    what :func:`json_payload` already does for the raw payload.
+    """
+    return json.dumps(obj, default=str)
+
+
 def _insert_evidence_row(
     conn: psycopg.Connection,
     *,
@@ -246,8 +258,8 @@ def _insert_evidence_row(
                 "request_ref": request_ref,
                 "payload_ref": payload_ref,
                 "payload_sha256": payload_sha256,
-                "parsed": Jsonb(parsed) if parsed is not None else None,
-                "match_keys": Jsonb(match_keys) if match_keys is not None else None,
+                "parsed": Jsonb(parsed, dumps=_dumps) if parsed is not None else None,
+                "match_keys": (Jsonb(match_keys, dumps=_dumps) if match_keys is not None else None),
                 "freshness_expires_at": fetched_at + timedelta(days=freshness_days),
             },
         )
