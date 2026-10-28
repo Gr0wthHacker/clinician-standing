@@ -1191,7 +1191,8 @@ def _findings(
         add(
             "individual_revalidation_due_soon",
             Severity.MEDIUM,
-            f"{_plural(len(enrollment.due_soon), 'clinician')} revalidate within "
+            f"{_plural(len(enrollment.due_soon), 'clinician')} "
+            f"{'is' if len(enrollment.due_soon) == 1 else 'are'} due to revalidate within "
             f"{DUE_SOON_DAYS} days",
             "CMS mails a revalidation request two to three months before the due date and "
             "accepts a submission no earlier than that. These are the ones with a date that "
