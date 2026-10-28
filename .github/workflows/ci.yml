@@ -66,12 +66,12 @@ jobs:
       # every problem instead of one problem at a time.
       - name: Ruff lint
         id: ruff_lint
-        run: ruff check --output-format=github src tests
+        run: ruff check --output-format=github src tests scripts
 
       - name: Ruff format check
         id: ruff_format
         if: ${{ !cancelled() }}
-        run: ruff format --check src tests
+        run: ruff format --check src tests scripts
 
       - name: Mypy
         id: mypy
