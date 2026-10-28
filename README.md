@@ -85,6 +85,28 @@ depending on how CMS is feeling. Budget about 5 GB of free disk in
 can diff rather than reload.
 
 Other targets: `make test`, `make lint`, `make typecheck`, `make clean`.
+
+### Sample run without downloading anything
+
+`tests/fixtures/sample/` holds two months of small synthetic CMS DAC, CMS
+revalidation and OIG LEIE files for an invented five-clinician roster
+(`roster.csv`). Names are placeholders and the NPIs are generated with valid
+check digits. `make sample` creates a scratch database on `TEST_DATABASE_URL`,
+applies every migration and seed, runs all three connectors as `app_ingest`
+for month 1, month 1 again (expects zero changes) and month 2, checks the
+affiliations, enrollments and sanctions it wrote, then drops the database.
+
+To drive the CLI by hand against the same files, point each connector at a
+local file:
+
+```bash
+F=tests/fixtures/sample/v1
+LOCAL_SOURCE_CMS_DAC=$F/cms_dac.csv \
+LOCAL_SOURCE_CMS_REVALIDATION=$F/cms_revalidation.csv \
+LOCAL_SOURCE_OIG_LEIE=$F/oig_leie.csv \
+  clinician-standing ingest --sources cms_dac,cms_revalidation,oig_leie
+clinician-standing audit 9900000001
+```
 Run `make` with no argument for the full list.
 
 ---

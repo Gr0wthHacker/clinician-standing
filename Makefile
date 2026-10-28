@@ -6,7 +6,7 @@ VENV   ?= .venv
 BIN    := $(VENV)/bin
 
 .DEFAULT_GOAL := help
-.PHONY: help install install-s3 lock test test-db lint typecheck migrate ingest status clean
+.PHONY: help install install-s3 lock test test-db sample sample-fixtures lint typecheck migrate ingest status clean
 
 help: ## Show this list of targets.
 	@grep -hE '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[1m%-12s\033[0m %s\n", $$1, $$2}'
@@ -38,9 +38,19 @@ test-db: ## Run the database-backed tests. Needs TEST_DATABASE_URL.
 	  exit 2; }
 	$(BIN)/pytest -m database
 
+sample: ## Run the synthetic sample roster through all three connectors. Needs TEST_DATABASE_URL.
+	@test -n "$$TEST_DATABASE_URL" || { \
+	  echo "TEST_DATABASE_URL is not set. Point it at a THROWAWAY cluster; the test"; \
+	  echo "creates, migrates and drops its own scratch database there."; \
+	  exit 2; }
+	$(BIN)/pytest tests/test_sample_ingest.py -v
+
+sample-fixtures: ## Regenerate tests/fixtures/sample from scripts/make_sample_fixtures.py.
+	$(BIN)/python scripts/make_sample_fixtures.py
+
 lint: ## Lint with ruff and check formatting.
-	$(BIN)/ruff check src tests
-	$(BIN)/ruff format --check src tests
+	$(BIN)/ruff check src tests scripts
+	$(BIN)/ruff format --check src tests scripts
 
 typecheck: ## Static type check the package with mypy.
 	$(BIN)/mypy
