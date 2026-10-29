@@ -38,8 +38,18 @@ s3 = [
   "botocore>=1.34,<2",
 ]
 
+# The read-only verification API (src/clinician_standing/api). Optional so the
+# monthly ingest job installs nothing it does not run.
+#
+#   pip install -e ".[api]"
+api = [
+  "fastapi>=0.115,<1",
+  "uvicorn>=0.30,<1",
+]
+
 dev = [
   "pytest>=8.0,<9",
+  "httpx>=0.27,<1",            # fastapi.testclient needs it
   "ruff>=0.5,<1",
   "mypy>=1.10,<2",
 ]
@@ -146,4 +156,8 @@ markers = [
   "network: test requires outbound network access (excluded from CI)",
   "database: test requires a live Postgres connection (excluded from CI)",
 ]
-filterwarnings = ["error::DeprecationWarning:clinician_standing.*"]
+filterwarnings = [
+  "error::DeprecationWarning:clinician_standing.*",
+  # Starlette's TestClient announces a future move from httpx to httpx2.
+  "ignore:Using `httpx` with `starlette.testclient`",
+]
