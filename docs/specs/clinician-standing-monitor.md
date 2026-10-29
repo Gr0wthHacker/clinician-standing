@@ -58,14 +58,13 @@ Core: about 9.5 days. With SAM.gov: about 11.5 days.
 
 ## Pricing
 
-$15-25 per clinician per month (from the T619 brief). Stripe prices come later under T621 and are referenced by env var.
+Set later under T621; Stripe prices are referenced by env var.
 
 ## Risks and open questions for Jack
 
-1. Price floor. `pricing.py` and `quote_lines_pppm_floor_chk` hold every Clinician Standing PPPM line at $200 or more, and your pricing note says prices are not to be lowered from $200-400. A $15-25 monitor line must be a separate product with `is_pppm_floored = false`. Is it sold on its own, as an add-on, or as the entry point to the $200 tiers?
+1. Price floor. `pricing.py` and `quote_lines_pppm_floor_chk` hold every PPPM line at the floor. A monitor line priced below it must be a separate product with `is_pppm_floored = false`. Is it sold on its own, as an add-on, or as the entry point to the existing tiers?
 2. Exclusion matching is NPI only. The README notes most LEIE rows carry no NPI. Name plus date-of-birth matching needs DOB on the roster, which runs into your no-PII rule. Ship NPI-only with the coverage note, or collect a salted DOB hash?
 3. License coverage is nurses enrolled through the client's own Nursys account. Physicians have no license source until a state board connector or FSMB (licensed, quote required) is added. Is the price the same for clinician types the monitor cannot cover yet?
 4. Diff state. The monthly workflow keeps connector state in an Actions cache, which is evicted after 7 days without a hit. The monitor diffs against its own snapshot table to avoid that, but raw payload retention still needs the `s3://` storage fix.
-5. This repo is public, and Group 1 is meant to stay blinded in public. This spec names the product and its price. Keep it here or move specs to a private repo?
 6. Counsel: does selling ongoing exclusion screening for staffing decisions raise FCRA questions? This is the same question your Whitecoat notes raised for credentialing use.
 7. Who receives alerts per roster, and is there a response-time promise? None is assumed here.
