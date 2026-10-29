@@ -1,0 +1,78 @@
+name: Weekly NPPES incremental
+
+# Applies the newest NPPES weekly incremental to nppes_providers (connector
+# nppes_weekly). Same shape and the same pinned action SHAs as
+# ingest-monthly.yml; read the notes at the top of that file about SHA pinning,
+# scheduled workflows on free private repos, and the storage path.
+#
+# The weekly file is small (one week of NPPES changes), so there is no disk
+# cleanup step and the timeout is short. A missed week is not backfilled: the
+# next monthly replicate covers it.
+
+on:
+  schedule:
+    # Mondays 08:20 UTC. CMS posts the weekly file early in the week.
+    - cron: "20 8 * * 1"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Download and diff but do not write to the database"
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+# Shares the monthly group so the two never write nppes_providers at once.
+concurrency:
+  group: ingest-monthly
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.11"
+  STORAGE_PATH: ${{ github.workspace }}/storage
+
+jobs:
+  ingest:
+    name: Download, diff and load the NPPES weekly file
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b  # v5.3.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      - name: Prepare storage directory
+        run: mkdir -p "$STORAGE_PATH/state"
+
+      - name: Restore connector diff state
+        uses: actions/cache@6849a6489940f00c2f30c0fb92c6274307ccb58a  # v4.1.2
+        with:
+          path: storage/state
+          key: ingest-weekly-state-${{ github.run_id }}
+          restore-keys: |
+            ingest-weekly-state-
+
+      - name: Run ingest
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          LOG_LEVEL: INFO
+        run: |
+          set -o pipefail
+          ARGS="--sources nppes_weekly"
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+          clinician-standing ingest $ARGS 2>&1 | tee "$STORAGE_PATH/ingest.log"

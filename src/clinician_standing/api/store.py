@@ -28,6 +28,7 @@ __all__ = [
     "ClinicianRecord",
     "LicenseRecord",
     "MemoryStore",
+    "PossibleExclusionRecord",
     "PostgresStore",
     "SanctionRecord",
     "SourceRecord",
@@ -82,6 +83,27 @@ class SanctionRecord:
 
 
 @dataclass(frozen=True)
+class PossibleExclusionRecord:
+    """One live ``leie_npi_candidates`` row for a clinician's NPI (0018)."""
+
+    review_status: str
+    match_basis: str
+    match_confidence: float
+    match_detail: Mapping[str, Any]
+    candidate_count: int
+    leie_last_name: str
+    leie_first_name: str | None
+    leie_middle_name: str | None
+    leie_state: str
+    leie_specialty: str | None
+    exclusion_type: str | None
+    exclusion_date: date | None
+    reinstatement_date: date | None
+    evidence_source_key: str | None
+    evidence_fetched_at: datetime | None
+
+
+@dataclass(frozen=True)
 class LicenseRecord:
     """One ``licenses`` row, with the source that asserted it."""
 
@@ -114,6 +136,7 @@ class ClinicianRecord:
     practice_states: tuple[str, ...] = ()
     sanctions: tuple[SanctionRecord, ...] = ()
     licenses: tuple[LicenseRecord, ...] = ()
+    possible_exclusions: tuple[PossibleExclusionRecord, ...] = ()
 
 
 class StandingStore(Protocol):
@@ -151,7 +174,10 @@ left join lateral (
     select fetched_at, freshness_expires_at, parsed
     from evidence
     where source_key = s.key and deleted_at is null
-    order by fetched_at desc
+    -- A connector that also writes per-match evidence (oig_leie) stamps it with
+    -- the same fetched_at as the file row; the file row carries the coverage
+    -- counts the notes read, so it wins the tie.
+    order by fetched_at desc, coalesce(match_keys ->> 'method', '') = 'bulk_file' desc
     limit 1
 ) e on true
 where s.deleted_at is null
@@ -208,6 +234,21 @@ from sanctions s
 left join evidence ev on ev.id = s.evidence_id
 where s.clinician_id = any(%(ids)s) and s.deleted_at is null
 order by s.action_date desc nulls last
+"""
+
+# Rejected candidates and candidates the latest LEIE run no longer produced are
+# not shown. Highest confidence first.
+_POSSIBLE_EXCLUSIONS_SQL = """
+select k.npi, k.review_status, k.match_basis, k.match_confidence, k.match_detail,
+       k.candidate_count, k.leie_last_name, k.leie_first_name, k.leie_middle_name,
+       k.leie_state, k.leie_specialty, k.exclusion_type, k.exclusion_date,
+       k.reinstatement_date, ev.source_key, ev.fetched_at
+from leie_npi_candidates k
+left join evidence ev on ev.id = k.leie_evidence_id
+where k.npi = any(%(npis)s)
+  and k.superseded_at is null
+  and k.review_status <> 'rejected'
+order by k.match_confidence desc, k.exclusion_date desc nulls last, k.leie_key
 """
 
 _LICENSES_SQL = """
@@ -355,6 +396,27 @@ class PostgresStore:
                     discipline_reported=r[12],
                 )
             )
+        possible: dict[str, list[PossibleExclusionRecord]] = {}
+        for r in self._rows(conn, _POSSIBLE_EXCLUSIONS_SQL, {"npis": [r[1] for r in rows]}):
+            possible.setdefault(r[0], []).append(
+                PossibleExclusionRecord(
+                    review_status=r[1],
+                    match_basis=r[2],
+                    match_confidence=float(r[3]),
+                    match_detail=r[4] if isinstance(r[4], dict) else {},
+                    candidate_count=int(r[5]),
+                    leie_last_name=r[6],
+                    leie_first_name=r[7],
+                    leie_middle_name=r[8],
+                    leie_state=r[9],
+                    leie_specialty=r[10],
+                    exclusion_type=r[11],
+                    exclusion_date=r[12],
+                    reinstatement_date=r[13],
+                    evidence_source_key=r[14],
+                    evidence_fetched_at=r[15],
+                )
+            )
         return [
             ClinicianRecord(
                 npi=r[1],
@@ -368,6 +430,7 @@ class PostgresStore:
                 practice_states=tuple(states.get(r[0], ())),
                 sanctions=tuple(sanctions.get(r[0], ())),
                 licenses=tuple(licenses.get(r[0], ())),
+                possible_exclusions=tuple(possible.get(r[1], ())),
             )
             for r in rows
         ]
@@ -446,6 +509,28 @@ class MemoryStore:
                 )
                 for x in c.get("licenses", [])
             )
+            possible = tuple(
+                PossibleExclusionRecord(
+                    review_status=x.get("review_status", "needs_review"),
+                    match_basis=x.get("match_basis", "name_state"),
+                    match_confidence=float(x["match_confidence"]),
+                    match_detail=x.get("match_detail") or {},
+                    candidate_count=int(x.get("candidate_count", 1)),
+                    leie_last_name=x["leie_last_name"],
+                    leie_first_name=x.get("leie_first_name"),
+                    leie_middle_name=x.get("leie_middle_name"),
+                    leie_state=x["leie_state"],
+                    leie_specialty=x.get("leie_specialty"),
+                    exclusion_type=x.get("exclusion_type"),
+                    exclusion_date=_date(x.get("exclusion_date")),
+                    reinstatement_date=_date(x.get("reinstatement_date")),
+                    evidence_source_key=x.get("evidence_source_key"),
+                    evidence_fetched_at=_datetime(x.get("evidence_fetched_at")),
+                )
+                for x in c.get("possible_exclusions", [])
+                if x.get("review_status", "needs_review") != "rejected"
+                and not x.get("superseded_at")
+            )
             clinicians.append(
                 ClinicianRecord(
                     npi=c["npi"],
@@ -459,6 +544,7 @@ class MemoryStore:
                     practice_states=tuple(sorted(c.get("practice_states", []))),
                     sanctions=sanctions,
                     licenses=licenses,
+                    possible_exclusions=possible,
                 )
             )
         return cls(sources, clinicians)

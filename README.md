@@ -120,12 +120,31 @@ Run `make` with no argument for the full list.
 | CMS Doctors and Clinicians National Downloadable File | `cms_dac` | 839 MB | 3.39 M | Monthly | UTF-8 |
 | CMS Revalidation Clinic Group Practice Reassignment | `cms_revalidation` | 540 MB | 3.39 M | Monthly | **latin-1** |
 | OIG LEIE (full file + monthly supplement) | `oig_leie` | 15.6 MB | 84,001 | Monthly | **latin-1** |
+| NPPES full replicate (V.2) | `nppes` | 1.2 GB zip / 11.7 GB | ~9 M | Monthly | UTF-8, per-line latin-1 fallback |
+| NPPES weekly incremental (V.2) | `nppes_weekly` | small | the week's changes | Weekly | same as `nppes` |
+| CMS Hospital General Information | `cms_hospitals` | ~2 MB | ~5,400 | Monthly | UTF-8 |
+| CMS Facility Affiliation Data | `cms_facility_affiliation` | ~60 MB | ~1.3 M | Monthly | UTF-8 |
+
+`nppes_weekly` reads the newest weekly file off the same NPPES downloads page
+and upserts every row into `nppes_providers`, skipping any row older than the
+stored one and never marking NPIs absent (the monthly replicate owns that). Its
+live download is untested: the CMS page was down for maintenance when it was
+built, so the file-name pattern is verified against fixtures only.
+`ingest-weekly.yml` runs it every Monday.
+
+The NPPES rows and the last two are the **directory layer** (`0016_directory_reference.sql`).
+They describe the whole national clinician population rather than client
+rosters, land in reference tables keyed on NPI and CMS Certification Number
+(`nppes_providers`, `facilities`, `clinician_facility_affiliations`), and never
+write `affiliations` or generate obligations. `clinician_directory` joins them
+to the roster at read time: NPPES status and self-reported license states,
+medical school and graduation year from the DAC file, and every open facility
+affiliation with the facility's name.
 
 ### Not yet built
 
 | Source | Key | Size | Cadence | Notes |
 |---|---|---|---|---|
-| NPPES full replicate | `nppes` | ~9 GB | Monthly | Source of truth for taxonomy, practice address, authorized official |
 | PECOS enrollment files | `pecos` | moderate | Monthly | — |
 | SAM.gov exclusions | `sam` | small | Daily | Second exclusion source; disagreement with LEIE is an exception, not a merge |
 | Nursys e-Notify | `nursys` | push | push + API | Free institution account; API password rotates every 90 days |
@@ -185,6 +204,13 @@ reason). Read the answer as covering the checked sources only.
   name plus date-of-birth matching is not enabled, so `no_npi_match` does not
   mean the clinician is not excluded. The note on every clean result says this
   with the counts from the last ingest.
+- LEIE rows without an NPI are linked to NPPES NPIs by name and state
+  (`leie_match.py`, table `leie_npi_candidates`). These come back under
+  `exclusions.possible_matches` with `match_basis: name_state`, a confidence
+  below 1.0 and `status: possible_match_needs_review`. They never appear under
+  `exclusions.matches`, never set `open_exclusion_found`, and never write
+  `sanctions`. The confidence orders candidates for review; nobody has measured
+  it against a labeled sample yet.
 - Only clinicians present in the CMS DAC file can be found. An NPI outside it
   returns `result: not_found` and no screen is run.
 - Name lookup is exact on the upper-cased name. A clinician is tied to a state
@@ -212,8 +238,10 @@ sources (no `state_*` connector ships), license number and profession inputs,
 `GET /v1/lookups/{id}` and any lookup log, batch endpoints, caching with
 `?fresh=true`, per-org keys stored hashed in the database with a dashboard,
 monthly quotas, metering and billing, sandbox keys, webhook re-verification,
-and board health checks. SAM.gov, NPDB and NPPES are registered sources with no
-data ingested, so they always appear under `not_checked`.
+and board health checks. SAM.gov and NPDB are registered sources with no data
+ingested, so they always appear under `not_checked`. NPPES appears under
+`checked`, with its `as_of`, once the `nppes` or `nppes_weekly` connector has
+run.
 
 ---
 
@@ -314,6 +342,8 @@ almost nothing, so name plus date-of-birth matching is mandatory — and a false
 positive there is a serious accusation about a named clinician. Exclusion
 matches below full confidence are written with a `match_confidence` under 1.0
 and routed to the exception queue, never auto-cleared.
+Name plus state candidates against NPPES (`0018`, `leie_match.py`) cover part
+of the gap for human review only; they are never written as sanctions.
 
 ### 5. Use the direct Postgres connection for bulk loads
 

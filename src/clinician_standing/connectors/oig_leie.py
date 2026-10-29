@@ -16,9 +16,14 @@ to the platform default.
 
 **NPI coverage is about 10%.** Roughly 8,701 of 84,001 rows carry an NPI, and
 the rest carry only name, date of birth, address and business name. NPI-only
-matching therefore finds almost nothing. NPI matching is implemented here and is
-the only matching that ships; name plus date-of-birth matching is stubbed and
+matching therefore finds almost nothing. NPI matching is the only matching
+that writes ``sanctions``; name plus date-of-birth matching is stubbed and
 gated, see :func:`match_by_name_dob`.
+
+Rows without an NPI are proposed against NPPES by name and state
+(:mod:`clinician_standing.leie_match`). Those land in ``leie_npi_candidates``
+as possible matches that need review, with confidence below 1.0, and never in
+``sanctions``.
 
 Populates ``sanctions`` with ``match_confidence`` 1.0 for an NPI match.
 """
@@ -27,6 +32,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import json
 from collections.abc import Iterator, Sequence
 from datetime import date, datetime
 from pathlib import Path
@@ -34,6 +40,7 @@ from typing import Any, ClassVar
 
 from ..db import copy_from_csv, transaction
 from ..evidence import insert_credential, json_payload, store_evidence, store_evidence_for_file
+from ..leie_match import leie_key, record_candidates
 from .base import Connector, ConnectorError, DiffResult
 
 __all__ = ["FILE_ENCODING", "LEIE_URL", "OigLeieConnector", "match_by_name_dob"]
@@ -129,7 +136,8 @@ create temporary table stg_oig_leie (
     exclusion_date     date,
     reinstatement_date date,
     waiver_date        date,
-    waiver_state       text
+    waiver_state       text,
+    leie_key           text
 ) on commit drop
 """
 
@@ -466,8 +474,11 @@ class OigLeieConnector(Connector):
             staged = copy_from_csv(
                 conn,
                 "stg_oig_leie",
-                STAGING_COLUMNS,
-                (tuple(row[c] for c in STAGING_COLUMNS) for row in self.parse(self.fetched_path)),
+                (*STAGING_COLUMNS, "leie_key"),
+                (
+                    (*(row[c] for c in STAGING_COLUMNS), leie_key(self.identity_key(row)))
+                    for row in self.parse(self.fetched_path)
+                ),
                 batch_size=self.settings.copy_batch_size,
             )
             self.log.info(
@@ -487,6 +498,31 @@ class OigLeieConnector(Connector):
                 if self._record_sanction(conn, match, file_evidence_id):
                     written += 1
             self.log.info("sanction rows written: %s", written)
+
+            # Name + state candidates for the rows with no NPI. Never sanctions.
+            summary = record_candidates(conn, file_evidence_id)
+            if summary.nppes_rows_available:
+                self.log.info(
+                    "LEIE rows without an NPI: %s eligible, %s with NPPES candidates, "
+                    "%s too ambiguous; %s candidates written for review, %s superseded",
+                    f"{summary.rows_eligible:,}",
+                    f"{summary.rows_with_candidates:,}",
+                    f"{summary.rows_too_ambiguous:,}",
+                    f"{summary.candidates_written:,}",
+                    f"{summary.candidates_superseded:,}",
+                )
+            else:
+                self.log.warning(
+                    "nppes_providers holds no individuals; LEIE rows without an NPI were not "
+                    "matched by name and state. Run the nppes connector first."
+                )
+            # Same transaction as the evidence insert above, so no reader ever
+            # sees the file evidence without these counts.
+            with conn.cursor() as cur:
+                cur.execute(
+                    "update evidence set parsed = parsed || %s::jsonb where id = %s",
+                    (json.dumps(summary.as_parsed()), file_evidence_id),
+                )
 
             if not NAME_DOB_MATCHING_ENABLED:
                 # Stated explicitly in the run log so nobody reads "0 matches"
