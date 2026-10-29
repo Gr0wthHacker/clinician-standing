@@ -25,7 +25,7 @@ The client keeps a roster of clinicians by NPI. Each time a source finishes an i
 
 - Roster: NPI (required), name, state and credential, entered by the client in the Lovable screens. No date of birth and no other PII.
 - Ingested now: CMS Doctors and Clinicians file, CMS Revalidation file, OIG LEIE, Nursys e-Notify.
-- Registered with no data yet, to add in order: SAM.gov exclusions (`sam`, free API key from SAM.gov), NPPES (`nppes`), then the state board bulk files the README lists (CA, TX, NC, VA).
+- Registered with no data yet, to add in order: SAM.gov exclusions (`sam`, free API key from SAM.gov), NPPES (`nppes`, connector in open PR #6), then the state board bulk files the README lists (CA, TX, NC, VA).
 - Never automated: PECOS web, Availity, CAQH. Work there stays a `PORTAL_REQUIRED` exception.
 
 ## Outputs and alerts
@@ -45,7 +45,7 @@ The client keeps a roster of clinicians by NPI. Each time a source finishes an i
 
 | Step | Days |
 |---|---|
-| Migration 0016: `monitor_rosters`, `monitor_roster_members`, `monitor_snapshots`, `monitor_alerts`, RLS in the 0008/0014 pattern (UI writes roster membership, ingest role writes snapshots and alerts) | 1 |
+| Next numbered migration (0016 and 0017 are already used on open branches): `monitor_rosters`, `monitor_roster_members`, `monitor_snapshots`, `monitor_alerts`, RLS in the 0008/0014 pattern (UI writes roster membership, ingest role writes snapshots and alerts) | 1 |
 | Snapshot and diff: standing per NPI from `api/service.py`, stored hash, alert per change, tests on the v1 to v2 fixtures | 2 |
 | `clinician-standing monitor run` CLI, called at the end of the monthly ingest and after each Nursys run | 0.5 |
 | Notifier behind an interface, vendor set by env var (none chosen yet) | 1 |
