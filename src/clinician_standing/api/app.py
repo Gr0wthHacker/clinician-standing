@@ -7,10 +7,14 @@ Endpoints (all under ``/v1``):
 * ``GET  /clinicians/{npi}``       standing by NPI
 * ``GET  /clinicians``             standing by ``last_name`` + ``state`` (+ ``first_name``)
 * ``POST /standing/check``         either lookup, JSON body
+* ``POST /roster``                 hand a placed clinician to the roster (the one write)
 
 Errors use one envelope, ``{"error": {"code", "message"}}``, with the codes
-``invalid_request`` (400), ``unauthorized`` (401), ``rate_limited`` (429),
-``auth_not_configured`` (503) and ``store_unavailable`` (503).
+``invalid_request`` (400), ``unauthorized`` (401), ``roster_entry_closed`` (409),
+``rate_limited`` (429), ``auth_not_configured`` (503), ``roster_not_configured``
+(503) and ``store_unavailable`` (503).
+
+Request bodies are never logged.
 """
 
 # No `from __future__ import annotations` here: FastAPI resolves the
@@ -23,7 +27,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
-from fastapi import Depends, FastAPI, Query, Request
+from fastapi import Depends, FastAPI, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -35,9 +39,12 @@ from .models import (
     CheckRequest,
     ErrorResponse,
     HealthResponse,
+    RosterReceipt,
+    RosterSubmission,
     SourcesResponse,
     StandingResponse,
 )
+from .roster_store import PostgresRosterStore, RosterEntryClosed, RosterStore
 from .store import PostgresStore, StandingStore, StoreUnavailable
 
 __all__ = ["ApiError", "create_app"]
@@ -47,21 +54,40 @@ LOGGER = logging.getLogger(__name__)
 API_VERSION = "0.1.0"
 
 DESCRIPTION = """
-Read-only lookups over the federal data the Clinician Standing ingest has loaded.
+Lookups over the federal data the Clinician Standing ingest has loaded, plus one
+write: `POST /v1/roster`, which records a placed clinician for review.
 
 Every lookup response carries a `sources` block. `sources.checked` lists each
 source the answer read, with `as_of` (when that snapshot was fetched) and a
 `stale` flag. `sources.not_checked` lists the sources this API knows about but
 did not read, with the reason. An answer covers only the checked sources.
 
+Roster intake is idempotent on `(source_system, external_id)`. Licenses sent
+there are recorded as claims and are not verified until matched to source evidence.
+
 Authenticate with `Authorization: Bearer <key>`.
 """
+
+ROSTER_NOTE = (
+    "Received for review. Reported licenses are recorded as claims and are not "
+    "verified until they are matched to source evidence."
+)
 
 _ERRORS: dict[int | str, dict[str, Any]] = {
     400: {"model": ErrorResponse, "description": "invalid_request"},
     401: {"model": ErrorResponse, "description": "unauthorized"},
     429: {"model": ErrorResponse, "description": "rate_limited"},
     503: {"model": ErrorResponse, "description": "auth_not_configured or store_unavailable"},
+}
+
+_ROSTER_RESPONSES: dict[int | str, dict[str, Any]] = {
+    **_ERRORS,
+    200: {"model": RosterReceipt, "description": "A resend: updated or unchanged"},
+    409: {"model": ErrorResponse, "description": "roster_entry_closed"},
+    503: {
+        "model": ErrorResponse,
+        "description": "auth_not_configured, roster_not_configured or store_unavailable",
+    },
 }
 
 
@@ -102,6 +128,7 @@ def create_app(
     settings: ApiSettings | None = None,
     limiter: RateLimiter | None = None,
     clock: Callable[[], datetime] | None = None,
+    roster_store: RosterStore | None = None,
 ) -> FastAPI:
     """Build the application.
 
@@ -109,6 +136,9 @@ def create_app(
     Postgres at ``API_DATABASE_URL``; this is what
     ``uvicorn --factory clinician_standing.api.app:create_app`` calls.
     ``clock`` fixes "now" for staleness and ``checked_at``; tests pass one.
+    ``roster_store`` backs ``POST /v1/roster``; without one it is Postgres at
+    ``API_ROSTER_DATABASE_URL`` when that is set, and the endpoint answers 503
+    otherwise.
     """
     now = clock or (lambda: datetime.now(UTC))
     settings = settings or ApiSettings.from_env()
@@ -116,6 +146,8 @@ def create_app(
         if not settings.database_url:
             raise RuntimeError("API_DATABASE_URL is not set; the API has nothing to read")
         store = PostgresStore(settings.database_url)
+    if roster_store is None and settings.roster_database_url:
+        roster_store = PostgresRosterStore(settings.roster_database_url)
     keyring = KeyRing(settings.api_keys)
     if keyring.ignored_short:
         LOGGER.warning(
@@ -241,5 +273,49 @@ def create_app(
         """Either lookup as a JSON body: ``{"npi"}`` or ``{"last_name", "state"}``
         with an optional ``first_name``."""
         return run_check(body)
+
+    @app.post(
+        "/v1/roster",
+        status_code=201,
+        response_model=RosterReceipt,
+        responses=_ROSTER_RESPONSES,
+        tags=["roster"],
+    )
+    def roster_intake(
+        body: RosterSubmission,
+        response: Response,
+        key_id: Annotated[str, Depends(authenticate)],
+    ) -> RosterReceipt:
+        """Record a placed clinician for roster review.
+
+        Idempotent on ``(source_system, external_id)``: the first call answers
+        201 ``created``; a resend answers 200 ``updated`` when anything changed
+        and 200 ``unchanged`` when nothing did. Send ``employment_status: ended``
+        when the placement ends. Unknown fields are rejected, so nothing beyond
+        name, NPI, licenses, states and employer can be stored."""
+        if roster_store is None:
+            raise ApiError(
+                503, "roster_not_configured", "Roster intake is not configured on this server."
+            )
+        try:
+            write = roster_store.upsert(body, key_id, now())
+        except RosterEntryClosed as exc:
+            raise ApiError(
+                409,
+                "roster_entry_closed",
+                "This roster entry was closed and cannot be changed through the API.",
+            ) from exc
+        if write.outcome != "created":
+            response.status_code = 200
+        return RosterReceipt(
+            id=write.id,
+            source_system=body.source_system,
+            external_id=body.external_id,
+            outcome=write.outcome,
+            review_status=write.review_status,
+            received_at=write.received_at,
+            updated_at=write.updated_at,
+            note=ROSTER_NOTE,
+        )
 
     return app
