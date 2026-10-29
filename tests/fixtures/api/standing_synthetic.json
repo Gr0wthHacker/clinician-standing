@@ -1,5 +1,5 @@
 {
-  "_comment": "SYNTHETIC TEST DATA. Invented clinicians named SAMPLE and TESTCASE; NPIs start 1990001 and are generated with valid check digits. No real person or record.",
+  "_comment": "SYNTHETIC TEST DATA. Invented clinicians named SAMPLE and TESTCASE; NPIs start 1990001 and are generated with valid check digits. No real person or record. possible_exclusions rows are synthetic leie_npi_candidates rows; the rejected and superseded ones must never surface.",
   "sources": [
     {
       "key": "cms_dac",
@@ -11,7 +11,9 @@
       "is_primary_source": false,
       "fetched_at": "2026-10-02T04:12:00+00:00",
       "freshness_expires_at": "2026-11-16T04:12:00+00:00",
-      "parsed": {"rows_after_dedupe": 5}
+      "parsed": {
+        "rows_after_dedupe": 5
+      }
     },
     {
       "key": "cms_revalidation",
@@ -30,8 +32,28 @@
       "kind": "bulk_file",
       "cadence": "monthly",
       "freshness_sla_days": 45,
-      "enabled": false,
-      "is_primary_source": true
+      "enabled": true,
+      "is_primary_source": true,
+      "fetched_at": "2026-10-05T03:00:00+00:00",
+      "freshness_expires_at": "2026-11-19T03:00:00+00:00",
+      "parsed": {
+        "rows_read": 12
+      }
+    },
+    {
+      "key": "nppes_weekly",
+      "display_name": "NPPES NPI Registry Weekly Incremental",
+      "kind": "bulk_file",
+      "cadence": "weekly",
+      "freshness_sla_days": 14,
+      "enabled": true,
+      "is_primary_source": true,
+      "fetched_at": "2026-10-27T03:00:00+00:00",
+      "freshness_expires_at": "2026-11-10T03:00:00+00:00",
+      "parsed": {
+        "rows_read": 3,
+        "incremental": true
+      }
     },
     {
       "key": "nursys",
@@ -54,7 +76,13 @@
       "is_primary_source": true,
       "fetched_at": "2026-08-01T02:05:00+00:00",
       "freshness_expires_at": "2026-09-15T02:05:00+00:00",
-      "parsed": {"rows_total": 100, "rows_with_npi": 10, "name_dob_matching_enabled": false}
+      "parsed": {
+        "rows_total": 100,
+        "rows_with_npi": 10,
+        "name_dob_matching_enabled": false,
+        "name_state_matching_ran": true,
+        "rows_without_npi_with_candidates": 7
+      }
     },
     {
       "key": "sam_gov",
@@ -83,7 +111,9 @@
       "credential": "MD",
       "clinician_type": "physician",
       "primary_specialty": "FAMILY PRACTICE",
-      "practice_states": ["MN"]
+      "practice_states": [
+        "MN"
+      ]
     },
     {
       "npi": "1990001020",
@@ -92,7 +122,10 @@
       "credential": "DO",
       "clinician_type": "physician",
       "primary_specialty": "INTERNAL MEDICINE",
-      "practice_states": ["MN", "WI"],
+      "practice_states": [
+        "MN",
+        "WI"
+      ],
       "sanctions": [
         {
           "source": "leie",
@@ -147,7 +180,78 @@
       "credential": "MD",
       "clinician_type": "physician",
       "primary_specialty": "PEDIATRICS",
-      "practice_states": ["MN"]
+      "practice_states": [
+        "MN"
+      ],
+      "possible_exclusions": [
+        {
+          "match_basis": "name_state",
+          "candidate_count": 1,
+          "leie_last_name": "TESTCASE",
+          "leie_first_name": "DELTA",
+          "leie_middle_name": null,
+          "leie_state": "MN",
+          "leie_specialty": "SYNTHETIC SPECIALTY",
+          "exclusion_type": "1128a1",
+          "exclusion_date": "2024-06-20",
+          "reinstatement_date": null,
+          "evidence_source_key": "oig_leie",
+          "evidence_fetched_at": "2026-08-01T02:05:00+00:00",
+          "review_status": "needs_review",
+          "match_confidence": 0.7,
+          "match_detail": {
+            "first_name": "exact",
+            "middle_name": "unknown",
+            "state": "practice",
+            "base_confidence": 0.7
+          }
+        },
+        {
+          "match_basis": "name_state",
+          "candidate_count": 1,
+          "leie_last_name": "TESTCASE",
+          "leie_first_name": "D",
+          "leie_middle_name": null,
+          "leie_state": "MN",
+          "leie_specialty": "SYNTHETIC SPECIALTY",
+          "exclusion_type": "1128a1",
+          "exclusion_date": "2024-06-20",
+          "reinstatement_date": null,
+          "evidence_source_key": "oig_leie",
+          "evidence_fetched_at": "2026-08-01T02:05:00+00:00",
+          "review_status": "rejected",
+          "match_confidence": 0.35,
+          "match_detail": {
+            "first_name": "initial",
+            "middle_name": "unknown",
+            "state": "practice",
+            "base_confidence": 0.35
+          }
+        },
+        {
+          "match_basis": "name_state",
+          "candidate_count": 1,
+          "leie_last_name": "TESTCASE",
+          "leie_first_name": "DEL",
+          "leie_middle_name": null,
+          "leie_state": "MN",
+          "leie_specialty": "SYNTHETIC SPECIALTY",
+          "exclusion_type": "1128a1",
+          "exclusion_date": "2024-06-20",
+          "reinstatement_date": null,
+          "evidence_source_key": "oig_leie",
+          "evidence_fetched_at": "2026-08-01T02:05:00+00:00",
+          "review_status": "needs_review",
+          "match_confidence": 0.5,
+          "superseded_at": "2026-08-01T02:05:00+00:00",
+          "match_detail": {
+            "first_name": "prefix",
+            "middle_name": "unknown",
+            "state": "practice",
+            "base_confidence": 0.5
+          }
+        }
+      ]
     }
   ]
 }

@@ -33,7 +33,7 @@ AUTH = {"Authorization": f"Bearer {KEY}"}
 ALPHA = "1990001012"  # clean, MN
 BRAVO = "1990001020"  # open LEIE exclusion, MN + WI
 CHARLIE = "1990001038"  # reinstated exclusion, Nursys license in WI, no practice
-DELTA = "1990001046"  # clean, MN, different surname
+DELTA = "1990001046"  # no NPI match, one LEIE name+state candidate for review, MN
 ABSENT = "1990001053"  # valid check digit, not in the data
 
 
@@ -184,8 +184,8 @@ def test_sources_endpoint_splits_checked_and_not_checked(client: TestClient) -> 
     body = client.get("/v1/sources", headers=AUTH).json()
     checked = {s["key"] for s in body["sources"]["checked"]}
     not_checked = {s["key"] for s in body["sources"]["not_checked"]}
-    assert checked == {"cms_dac", "oig_leie", "nursys"}
-    assert not_checked == {"nppes", "sam_gov", "state_ca"}
+    assert checked == {"cms_dac", "oig_leie", "nursys", "nppes", "nppes_weekly"}
+    assert not_checked == {"sam_gov", "state_ca"}
     # Enrollment sources feed nothing in this API and are left out entirely.
     assert "cms_revalidation" not in checked | not_checked
     assert body["checked_at"].startswith("2026-10-28T12:00")
@@ -199,7 +199,12 @@ def test_sources_carry_as_of_and_staleness(client: TestClient) -> None:
     assert by_key["cms_dac"]["stale"] is False
     assert by_key["sam_gov"]["as_of"] is None
     assert by_key["sam_gov"]["reason_not_checked"] == "No data from this source has been ingested."
-    assert by_key["nppes"]["reason_not_checked"].startswith("This API does not read")
+    assert by_key["nppes"]["checked"] is True
+    assert by_key["nppes"]["as_of"].startswith("2026-10-05T03:00")
+    assert by_key["nppes"]["reason_not_checked"] is None
+    assert by_key["nppes"]["role"] == "identity"
+    assert by_key["nppes_weekly"]["as_of"].startswith("2026-10-27T03:00")
+    assert by_key["nppes_weekly"]["freshness_sla_days"] == 14
 
 
 def test_every_lookup_response_has_sources_and_scope(client: TestClient) -> None:
@@ -240,6 +245,8 @@ def test_clean_npi_reports_no_npi_match_with_denominator(client: TestClient) -> 
     assert "fetched 2026-08-01" in note
     assert "90 of the 100 records" in note
     assert "name and date-of-birth matching is not enabled" in note
+    assert "7 were linked by name and state to at least one NPPES NPI" in note
+    assert ex["possible_matches"] == []
     assert "past its 45-day freshness limit" in note
     assert "Not screened: SAM.gov Exclusions." in note
     assert note.endswith("does not establish that the clinician is not excluded.")
@@ -257,6 +264,62 @@ def test_open_exclusion_is_reported_with_source_and_date(client: TestClient) -> 
     assert match["open"] is True
     assert match["match_basis"] == "npi"
     assert "does not establish" not in ex["note"]
+
+
+def test_name_state_candidate_is_a_possible_match_never_an_exclusion(client: TestClient) -> None:
+    body = client.get(f"/v1/clinicians/{DELTA}", headers=AUTH).json()
+    ex = body["clinicians"][0]["exclusions"]
+    assert ex["status"] == "possible_match_needs_review"
+    assert ex["matches"] == []
+    # The rejected and the superseded candidate in the fixture are not shown.
+    [possible] = ex["possible_matches"]
+    assert possible["status"] == "possible_match_needs_review"
+    assert possible["match_basis"] == "name_state"
+    assert 0 < possible["match_confidence"] < 1
+    assert possible["match_detail"]["first_name"] == "exact"
+    assert possible["leie_state"] == "MN"
+    assert possible["source_key"] == "oig_leie"
+    assert possible["open"] is True
+    note = ex["note"]
+    assert "No exclusion record matched this NPI" in note
+    assert "1 OIG LEIE record with no NPI names someone with this clinician's name" in note
+    assert "needs human review, and none is asserted as an exclusion" in note
+    assert note.endswith("does not establish that the clinician is not excluded.")
+
+
+def test_possible_match_beside_an_npi_exclusion_keeps_the_npi_status() -> None:
+    data = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    data["clinicians"][1]["possible_exclusions"] = data["clinicians"][3]["possible_exclusions"][:1]
+    resp = service.check(MemoryStore.from_dict(data), CheckRequest(npi=BRAVO), now=NOW)
+    ex = resp.clinicians[0].exclusions
+    assert ex.status == "open_exclusion_found"
+    assert [m.match_basis for m in ex.matches] == ["npi"]
+    assert [p.match_basis for p in ex.possible_matches] == ["name_state"]
+
+
+def test_confirmed_candidate_is_still_not_an_exclusion() -> None:
+    data = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    data["clinicians"][3]["possible_exclusions"][0]["review_status"] = "confirmed"
+    resp = service.check(MemoryStore.from_dict(data), CheckRequest(npi=DELTA), now=NOW)
+    ex = resp.clinicians[0].exclusions
+    assert ex.status == "possible_match_needs_review"
+    assert ex.matches == []
+    assert ex.possible_matches[0].status == "confirmed_by_review"
+
+
+def test_possible_match_model_refuses_confidence_of_one() -> None:
+    data = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    data["clinicians"][3]["possible_exclusions"][0]["match_confidence"] = 1.0
+    with pytest.raises(ValueError, match="less than 1"):
+        service.check(MemoryStore.from_dict(data), CheckRequest(npi=DELTA), now=NOW)
+
+
+def test_leie_note_says_when_name_state_matching_did_not_run() -> None:
+    data = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    leie = next(s for s in data["sources"] if s["key"] == "oig_leie")
+    leie["parsed"].pop("name_state_matching_ran")
+    resp = service.check(MemoryStore.from_dict(data), CheckRequest(npi=ALPHA), now=NOW)
+    assert "Name and state matching against NPPES did not run" in resp.clinicians[0].exclusions.note
 
 
 def test_reinstated_exclusion_and_license_record(client: TestClient) -> None:

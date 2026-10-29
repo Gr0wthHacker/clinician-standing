@@ -25,10 +25,13 @@ NOW = datetime(2026, 10, 28, 12, 0, tzinfo=UTC)
 ALPHA = "1990001012"
 BRAVO = "1990001020"
 CHARLIE = "1990001038"
+DELTA = "1990001046"
 
 DAC_EV = "aaaaaaaa-0000-4000-8000-00000000d001"
 LEIE_EV = "aaaaaaaa-0000-4000-8000-00000000d002"
 NURSYS_EV = "aaaaaaaa-0000-4000-8000-00000000d003"
+NPPES_EV = "aaaaaaaa-0000-4000-8000-00000000d004"
+LEIE_MATCH_EV = "aaaaaaaa-0000-4000-8000-00000000d005"
 PRACTICE_MN = "aaaaaaaa-0000-4000-8000-00000000d0a1"
 PRACTICE_WI = "aaaaaaaa-0000-4000-8000-00000000d0a2"
 
@@ -58,9 +61,10 @@ def _seed(cur) -> None:
             "ref": "synthetic/oig_leie.csv",
             "sha": "d2" * 32,
             "parsed": (
-                '{"rows_total": 100, "rows_with_npi": 10, "name_dob_matching_enabled": false}'
+                '{"rows_total": 100, "rows_with_npi": 10, "name_dob_matching_enabled": false,'
+                ' "name_state_matching_ran": true, "rows_without_npi_with_candidates": 4}'
             ),
-            "mk": '{"npi": "exact"}',
+            "mk": '{"npi": "exact", "method": "bulk_file"}',
             "expires": datetime(2026, 9, 15, 2, 5, tzinfo=UTC),
         },
         {
@@ -72,6 +76,28 @@ def _seed(cur) -> None:
             "parsed": "{}",
             "mk": '{"ncsbn_id": 1, "method": "nursys_ncsbn", "has_discipline": false}',
             "expires": datetime(2027, 1, 8, 12, 0, tzinfo=UTC),
+        },
+        {
+            "id": NPPES_EV,
+            "key": "nppes",
+            "fetched": datetime(2026, 10, 5, 3, 0, tzinfo=UTC),
+            "ref": "synthetic/nppes.zip",
+            "sha": "d4" * 32,
+            "parsed": '{"rows_read": 12}',
+            "mk": '{"npi": "exact", "method": "bulk_file"}',
+            "expires": datetime(2026, 11, 19, 3, 0, tzinfo=UTC),
+        },
+        # Per-match LEIE evidence carries the file's fetched_at. The sources
+        # block must still read the file row's coverage counts.
+        {
+            "id": LEIE_MATCH_EV,
+            "key": "oig_leie",
+            "fetched": datetime(2026, 8, 1, 2, 5, tzinfo=UTC),
+            "ref": "synthetic/oig_leie_match.json",
+            "sha": "d5" * 32,
+            "parsed": '{"npi": "1990001020"}',
+            "mk": '{"npi": "1990001020", "method": "npi_exact", "match_confidence": 1.0}',
+            "expires": datetime(2026, 9, 15, 2, 5, tzinfo=UTC),
         },
     ):
         cur.execute(_EVIDENCE, ev)
@@ -93,7 +119,13 @@ def _seed(cur) -> None:
         "values (%s, 'CHARLIE', 'SAMPLE', 'np')",
         (CHARLIE,),
     )
+    cur.execute(
+        "insert into clinicians (npi, first_name, last_name, clinician_type) "
+        "values (%s, 'DELTA', 'TESTCASE', 'physician')",
+        (DELTA,),
+    )
     for npi, pid, end in (
+        (DELTA, PRACTICE_MN, None),
         (ALPHA, PRACTICE_MN, None),
         (BRAVO, PRACTICE_MN, None),
         (BRAVO, PRACTICE_WI, None),
@@ -118,6 +150,22 @@ def _seed(cur) -> None:
         "%s, %s from clinicians where npi = %s",
         (NURSYS_EV, datetime(2026, 10, 10, 12, 0, tzinfo=UTC), CHARLIE),
     )
+    # Name + state candidates for DELTA: one live, one rejected, one superseded.
+    for key, first, conf, status, superseded in (
+        ("a" * 64, "DELTA", 0.7, "needs_review", None),
+        ("b" * 64, "D", 0.35, "rejected", None),
+        ("c" * 64, "DEL", 0.5, "needs_review", datetime(2026, 8, 1, 2, 5, tzinfo=UTC)),
+    ):
+        cur.execute(
+            "insert into leie_npi_candidates (leie_key, npi, leie_last_name, leie_first_name, "
+            "leie_state, exclusion_type, exclusion_date, match_detail, match_confidence, "
+            "candidate_count, review_status, reviewed_at, leie_evidence_id, superseded_at) "
+            "values (%s, %s, 'TESTCASE', %s, 'MN', '1128a1', date '2024-06-20', "
+            '\'{"first_name": "exact", "middle_name": "unknown", '
+            '"state": "practice"}\', %s, 1, %s, '
+            "case when %s = 'needs_review' then null else now() end, %s, %s)",
+            (key, DELTA, first, conf, status, status, LEIE_EV, superseded),
+        )
 
 
 @pytest.fixture
@@ -149,11 +197,33 @@ def store() -> Iterator[PostgresStore]:
 def test_sources_read_from_registry(store: PostgresStore) -> None:
     block = service.build_sources_block(store.list_sources(), NOW)
     checked = {s.key for s in block.checked}
-    assert {"cms_dac", "oig_leie", "nursys"} <= checked
+    assert {"cms_dac", "oig_leie", "nursys", "nppes"} <= checked
     not_checked = {s.key for s in block.not_checked}
-    assert {"sam_gov", "nppes", "state_ca"} <= not_checked
+    assert {"sam_gov", "state_ca", "nppes_weekly"} <= not_checked
     leie = next(s for s in block.checked if s.key == "oig_leie")
     assert leie.stale is True
+    nppes = next(s for s in block.checked if s.key == "nppes")
+    assert nppes.as_of == datetime(2026, 10, 5, 3, 0, tzinfo=UTC)
+
+
+def test_leie_coverage_reads_the_file_evidence_not_a_match_row(store: PostgresStore) -> None:
+    resp = service.check(store, CheckRequest(npi=ALPHA), now=NOW)
+    note = resp.clinicians[0].exclusions.note
+    assert "90 of the 100 records" in note
+    assert "4 were linked by name and state" in note
+
+
+def test_name_state_candidate_surfaces_as_possible_match(store: PostgresStore) -> None:
+    resp = service.check(store, CheckRequest(npi=DELTA), now=NOW)
+    ex = resp.clinicians[0].exclusions
+    assert ex.status == "possible_match_needs_review"
+    assert ex.matches == []
+    [possible] = ex.possible_matches
+    assert possible.status == "possible_match_needs_review"
+    assert possible.match_confidence == pytest.approx(0.7)
+    assert possible.leie_first_name == "DELTA"
+    assert possible.source_key == "oig_leie"
+    assert possible.match_detail["state"] == "practice"
 
 
 def test_npi_lookup_with_open_exclusion(store: PostgresStore) -> None:
