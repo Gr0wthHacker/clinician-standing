@@ -14,6 +14,12 @@ CI foundation that made it verifiable (WP0.1) and a bug that surfaced with it.
   CI installs `--require-hashes`.
 
 ### Features
+- **Roster intake** (T115): `POST /v1/roster` records a placed clinician handed
+  over by a placement system (PlaceRail first). Idempotent on
+  `(source_system, external_id)`, rejects unknown fields so no PHI can be
+  stored, never logs the body. Writes `roster_intake` (migration
+  `0019_roster_intake.sql`) through a new `app_roster_api` role set by
+  `API_ROSTER_DATABASE_URL`; the lookup side keeps its read-only credential.
 - **Standing API v0.1** (`src/clinician_standing/api`): read-only FastAPI app:
   lookup by NPI or exact name plus state, exclusion screen and license records
   from ingested data, a `sources` block with as-of dates on every lookup,

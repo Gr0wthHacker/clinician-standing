@@ -140,8 +140,9 @@ session-based with MFA and their terms prohibit it. Work there raises a
 
 ## Standing API (v0.1)
 
-A read-only HTTP API over the data this repo has already ingested. It makes no
-outbound request and writes nothing. It reports what the ingested sources say
+An HTTP API over the data this repo has already ingested. It makes no outbound
+request. Lookups write nothing; the one write is roster intake (below), on its
+own credential. It reports what the ingested sources say
 about a clinician and the date each source was fetched, and nothing beyond
 that. The endpoint and field names follow the license-check-hub spec where the
 concept is the same.
@@ -160,6 +161,7 @@ make api                                   # uvicorn on 127.0.0.1:8000, docs at 
 | GET | `/v1/clinicians/{npi}` | key | Standing by NPI |
 | GET | `/v1/clinicians?last_name=&state=&first_name=` | key | Standing by exact name plus state, up to 25 candidates |
 | POST | `/v1/standing/check` | key | Either lookup as JSON: `{"npi"}` or `{"last_name", "state", "first_name"?}` |
+| POST | `/v1/roster` | key | Record a placed clinician for roster review (idempotent) |
 
 ```bash
 curl -s localhost:8000/v1/clinicians/1990001012 -H "Authorization: Bearer $API_KEYS"
@@ -193,6 +195,30 @@ reason). Read the answer as covering the checked sources only.
   can only be Nursys, which covers nurses enrolled through a client account. No
   state board source is ingested.
 
+**Roster intake.** `POST /v1/roster` takes a placed clinician from a placement
+system (first caller: PlaceRail) and writes one `roster_intake` row per
+`(source_system, external_id)`. The first call answers 201 `created`; a resend
+answers 200 `updated` or `unchanged`, so a caller can retry freely. Send
+`employment_status: "ended"` when the placement ends. The body holds name, NPI
+when known, licenses (state, type, number, expiry), states and employer name,
+and unknown fields are rejected with 400, so a date of birth or contact detail
+cannot be stored. Reported licenses are claims: they never enter the `licenses`
+table, and an intake row stays `review_status: pending` until someone matches
+it to the monitored roster. The endpoint writes through
+`API_ROSTER_DATABASE_URL`, which names the `app_roster_api` role from
+`0019_roster_intake.sql` (that role reaches `roster_intake` and nothing else).
+Unset, the endpoint answers 503 `roster_not_configured`. Request bodies are
+never logged.
+
+```bash
+curl -s localhost:8000/v1/roster -H "Authorization: Bearer $API_KEYS" \
+  -H 'content-type: application/json' -d '{
+    "source_system": "placerail", "external_id": "placement-0001",
+    "clinician": {"first_name": "ALPHA", "last_name": "SAMPLE", "npi": "1990001012"},
+    "licenses": [{"state": "MN", "license_type": "RN"}],
+    "employer": {"name": "SAMPLE TEST CLINIC"}}'
+```
+
 **Auth and limits.** `API_KEYS` is a comma-separated list; keys shorter than 24
 characters are ignored. Send `Authorization: Bearer <key>`. With no usable key
 the API answers 503 `auth_not_configured`. `API_RATE_LIMIT_PER_MINUTE` (default
@@ -201,7 +227,8 @@ worker counts separately.
 
 **Errors** use `{"error": {"code", "message"}}`: `invalid_request` (400, which
 includes an NPI with a bad check digit), `unauthorized` (401), `rate_limited`
-(429 with `Retry-After`), `auth_not_configured` and `store_unavailable` (503).
+(429 with `Retry-After`), `roster_entry_closed` (409), `auth_not_configured`,
+`roster_not_configured` and `store_unavailable` (503).
 
 **OpenAPI.** `docs/openapi.json` is generated from the code by `make openapi`,
 and `tests/test_api.py` fails when the two disagree. A running server also
@@ -228,7 +255,7 @@ data ingested, so they always appear under `not_checked`.
 │       ├── cli.py           # `clinician-standing` entry point: ingest, status
 │       ├── config.py        # environment loading and validation
 │       ├── db.py            # psycopg connection and COPY helpers
-│       ├── api/             # read-only standing API (FastAPI): app, auth, store, service
+│       ├── api/             # standing API (FastAPI): app, auth, store, service, roster intake
 │       └── connectors/      # one module per source: fetch, checksum, diff, load
 ├── tests/
 │   ├── conftest.py          # fixtures; no network, no database
