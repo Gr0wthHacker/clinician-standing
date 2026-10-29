@@ -96,11 +96,15 @@ class ApiSettings:
             ``DATABASE_URL`` so the API can run as a role with read access only.
         api_keys: ``API_KEYS``, comma-separated.
         rate_limit_per_minute: ``API_RATE_LIMIT_PER_MINUTE``. 0 disables it.
+        roster_database_url: ``API_ROSTER_DATABASE_URL``, the ``app_roster_api``
+            role (``0019_roster_intake.sql``). The only write credential the API
+            holds. Unset, ``POST /v1/roster`` answers 503.
     """
 
     database_url: str | None
     api_keys: tuple[str, ...]
     rate_limit_per_minute: int = 60
+    roster_database_url: str | None = None
 
     @classmethod
     def from_env(cls) -> ApiSettings:
@@ -113,8 +117,10 @@ class ApiSettings:
                 f"API_RATE_LIMIT_PER_MINUTE must be an integer, got {raw_limit!r}"
             ) from exc
         url = os.environ.get("API_DATABASE_URL", "").strip() or None
+        roster_url = os.environ.get("API_ROSTER_DATABASE_URL", "").strip() or None
         return cls(
             database_url=url,
             api_keys=tuple(k for k in raw_keys.split(",") if k.strip()),
             rate_limit_per_minute=limit,
+            roster_database_url=roster_url,
         )

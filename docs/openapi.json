@@ -585,6 +585,282 @@
         "title": "LicenseScreen",
         "type": "object"
       },
+      "RosterClinician": {
+        "additionalProperties": false,
+        "properties": {
+          "credential": {
+            "anyOf": [
+              {
+                "maxLength": 20,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "examples": [
+              "RN"
+            ],
+            "title": "Credential"
+          },
+          "first_name": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "examples": [
+              "ALPHA"
+            ],
+            "title": "First Name"
+          },
+          "last_name": {
+            "examples": [
+              "SAMPLE"
+            ],
+            "maxLength": 80,
+            "title": "Last Name",
+            "type": "string"
+          },
+          "npi": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Send it when known.",
+            "title": "Npi"
+          }
+        },
+        "required": [
+          "last_name"
+        ],
+        "title": "RosterClinician",
+        "type": "object"
+      },
+      "RosterEmployer": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "examples": [
+              "SAMPLE TEST CLINIC"
+            ],
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "org_pac_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "CMS group PAC ID, when known.",
+            "title": "Org Pac Id"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "RosterEmployer",
+        "type": "object"
+      },
+      "RosterLicense": {
+        "additionalProperties": false,
+        "description": "A license as the caller reports it. Recorded as a claim, never as evidence.",
+        "properties": {
+          "expires_on": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires On"
+          },
+          "license_number": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "License Number"
+          },
+          "license_type": {
+            "examples": [
+              "RN"
+            ],
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "License Type",
+            "type": "string"
+          },
+          "state": {
+            "examples": [
+              "MN"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "license_type"
+        ],
+        "title": "RosterLicense",
+        "type": "object"
+      },
+      "RosterReceipt": {
+        "properties": {
+          "external_id": {
+            "title": "External Id",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "outcome": {
+            "description": "created (201), or updated / unchanged (200) for a resend.",
+            "enum": [
+              "created",
+              "updated",
+              "unchanged"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          },
+          "received_at": {
+            "format": "date-time",
+            "title": "Received At",
+            "type": "string"
+          },
+          "review_status": {
+            "enum": [
+              "pending",
+              "matched",
+              "rejected"
+            ],
+            "title": "Review Status",
+            "type": "string"
+          },
+          "source_system": {
+            "title": "Source System",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "source_system",
+          "external_id",
+          "outcome",
+          "review_status",
+          "received_at",
+          "updated_at",
+          "note"
+        ],
+        "title": "RosterReceipt",
+        "type": "object"
+      },
+      "RosterSubmission": {
+        "additionalProperties": false,
+        "description": "One placed clinician. ``(source_system, external_id)`` is the idempotency key:\nresending it updates the same row, and an identical resend changes nothing.",
+        "properties": {
+          "clinician": {
+            "$ref": "#/components/schemas/RosterClinician"
+          },
+          "employer": {
+            "$ref": "#/components/schemas/RosterEmployer"
+          },
+          "employment_status": {
+            "default": "active",
+            "enum": [
+              "active",
+              "ended"
+            ],
+            "title": "Employment Status",
+            "type": "string"
+          },
+          "external_id": {
+            "description": "The caller's own id, e.g. a placement id.",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "External Id",
+            "type": "string"
+          },
+          "licenses": {
+            "items": {
+              "$ref": "#/components/schemas/RosterLicense"
+            },
+            "maxItems": 50,
+            "title": "Licenses",
+            "type": "array"
+          },
+          "placed_on": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Placed On"
+          },
+          "source_system": {
+            "examples": [
+              "placerail"
+            ],
+            "title": "Source System",
+            "type": "string"
+          },
+          "states": {
+            "description": "States the clinician works or is licensed in. License states are added.",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 60,
+            "title": "States",
+            "type": "array"
+          }
+        },
+        "required": [
+          "source_system",
+          "external_id",
+          "clinician",
+          "employer"
+        ],
+        "title": "RosterSubmission",
+        "type": "object"
+      },
       "SourceStatus": {
         "description": "One source this API reads or would read, and how current it is.",
         "properties": {
@@ -840,7 +1116,7 @@
     }
   },
   "info": {
-    "description": "\nRead-only lookups over the federal data the Clinician Standing ingest has loaded.\n\nEvery lookup response carries a `sources` block. `sources.checked` lists each\nsource the answer read, with `as_of` (when that snapshot was fetched) and a\n`stale` flag. `sources.not_checked` lists the sources this API knows about but\ndid not read, with the reason. An answer covers only the checked sources.\n\nAuthenticate with `Authorization: Bearer <key>`.\n",
+    "description": "\nLookups over the federal data the Clinician Standing ingest has loaded, plus one\nwrite: `POST /v1/roster`, which records a placed clinician for review.\n\nEvery lookup response carries a `sources` block. `sources.checked` lists each\nsource the answer read, with `as_of` (when that snapshot was fetched) and a\n`stale` flag. `sources.not_checked` lists the sources this API knows about but\ndid not read, with the reason. An answer covers only the checked sources.\n\nRoster intake is idempotent on `(source_system, external_id)`. Licenses sent\nthere are recorded as claims and are not verified until matched to source evidence.\n\nAuthenticate with `Authorization: Bearer <key>`.\n",
     "title": "Clinician Standing API",
     "version": "0.1.0"
   },
@@ -1070,6 +1346,113 @@
         "summary": "Health",
         "tags": [
           "meta"
+        ]
+      }
+    },
+    "/v1/roster": {
+      "post": {
+        "description": "Record a placed clinician for roster review.\n\nIdempotent on ``(source_system, external_id)``: the first call answers\n201 ``created``; a resend answers 200 ``updated`` when anything changed\nand 200 ``unchanged`` when nothing did. Send ``employment_status: ended``\nwhen the placement ends. Unknown fields are rejected, so nothing beyond\nname, NPI, licenses, states and employer can be stored.",
+        "operationId": "roster_intake_v1_roster_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RosterSubmission"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RosterReceipt"
+                }
+              }
+            },
+            "description": "A resend: updated or unchanged"
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RosterReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "invalid_request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "roster_entry_closed"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "rate_limited"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "auth_not_configured, roster_not_configured or store_unavailable"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Roster Intake",
+        "tags": [
+          "roster"
         ]
       }
     },
