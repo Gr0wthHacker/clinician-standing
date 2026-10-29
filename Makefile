@@ -25,7 +25,7 @@ lock: ## Regenerate the hashed lockfiles from pyproject (needs uv on PATH).
 	@# Windows dev box from the same file. Re-run this whenever pyproject's
 	@# dependencies change, and commit the result.
 	uv pip compile --universal --generate-hashes pyproject.toml -o requirements.txt
-	uv pip compile --universal --generate-hashes --extra s3 --extra dev \
+	uv pip compile --universal --generate-hashes --extra s3 --extra api --extra dev \
 	  pyproject.toml -o requirements-dev.txt
 
 test: ## Run the test suite (no network, no database).
