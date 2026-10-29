@@ -342,7 +342,7 @@ almost nothing, so name plus date-of-birth matching is mandatory — and a false
 positive there is a serious accusation about a named clinician. Exclusion
 matches below full confidence are written with a `match_confidence` under 1.0
 and routed to the exception queue, never auto-cleared.
-Name plus state candidates against NPPES (`0017`, `leie_match.py`) cover part
+Name plus state candidates against NPPES (`0018`, `leie_match.py`) cover part
 of the gap for human review only; they are never written as sanctions.
 
 ### 5. Use the direct Postgres connection for bulk loads

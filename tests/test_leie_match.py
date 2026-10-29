@@ -34,7 +34,7 @@ from clinician_standing.leie_match import (
 )
 from test_directory_connectors import INDIVIDUAL, nppes_row, write_nppes_zip
 
-MIGRATION = Path(__file__).parent.parent / "db" / "migrations" / "0017_leie_npi_candidates.sql"
+MIGRATION = Path(__file__).parent.parent / "db" / "migrations" / "0018_leie_npi_candidates.sql"
 
 
 def _leie(

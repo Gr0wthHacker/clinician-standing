@@ -59,7 +59,7 @@ __all__ = [
 ]
 
 #: Accent folding, character for character. ``app.name_key`` in
-#: 0017_leie_npi_candidates.sql uses these exact literals; a test checks.
+#: 0018_leie_npi_candidates.sql uses these exact literals; a test checks.
 ACCENTS_FROM = "ÀÁÂÃÄÅàáâãäåÇçÈÉÊËèéêëÌÍÎÏìíîïÑñÒÓÔÕÖØòóôõöøÙÚÛÜùúûüÝýÿ"
 ACCENTS_TO = "AAAAAAaaaaaaCcEEEEeeeeIIIIiiiiNnOOOOOOooooooUUUUuuuuYyy"
 _FOLD = str.maketrans(ACCENTS_FROM, ACCENTS_TO)

@@ -14,7 +14,7 @@ CI foundation that made it verifiable (WP0.1) and a bug that surfaced with it.
   CI installs `--require-hashes`.
 
 ### Features
-- **LEIE name + state candidates** (T836, `0017_leie_npi_candidates.sql`,
+- **LEIE name + state candidates** (T836, `0018_leie_npi_candidates.sql`,
   `leie_match.py`). LEIE rows with no NPI are matched against NPPES individuals
   on surname key, first name (exact, 3+ letter prefix, or initial), middle
   initial when both sides have one, and practice or self-reported license state.

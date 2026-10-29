@@ -84,7 +84,7 @@ class SanctionRecord:
 
 @dataclass(frozen=True)
 class PossibleExclusionRecord:
-    """One live ``leie_npi_candidates`` row for a clinician's NPI (0017)."""
+    """One live ``leie_npi_candidates`` row for a clinician's NPI (0018)."""
 
     review_status: str
     match_basis: str

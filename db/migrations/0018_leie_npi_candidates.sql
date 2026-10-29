@@ -1,5 +1,5 @@
 -- =============================================================================
--- 0017_leie_npi_candidates.sql -- possible NPI links for LEIE rows with no NPI,
+-- 0018_leie_npi_candidates.sql -- possible NPI links for LEIE rows with no NPI,
 -- and the NPPES weekly incremental source.
 --
 -- About 90% of OIG LEIE rows carry no NPI (oig_leie.py), so an NPI-only screen
@@ -71,7 +71,7 @@ as $$
 $$;
 
 comment on function app.name_key(text) is
-  'Surname blocking key for LEIE to NPPES candidate matching (0017). Matches leie_match.name_key in Python.';
+  'Surname blocking key for LEIE to NPPES candidate matching (0018). Matches leie_match.name_key in Python.';
 
 grant usage on schema app to app_internal;
 grant execute on function app.name_key(text) to app_internal;
@@ -137,7 +137,7 @@ create table if not exists leie_npi_candidates (
 );
 
 comment on table leie_npi_candidates is
-  'Possible NPI links for OIG LEIE rows that carry no NPI, proposed by name and state against NPPES (0017). Candidates only: never written to sanctions, confidence always below 1.0, surfaced by the API as needing human review.';
+  'Possible NPI links for OIG LEIE rows that carry no NPI, proposed by name and state against NPPES (0018). Candidates only: never written to sanctions, confidence always below 1.0, surfaced by the API as needing human review.';
 comment on column leie_npi_candidates.review_status is
   'needs_review until a person decides. confirmed still does not write sanctions; rejected hides the row from the API.';
 

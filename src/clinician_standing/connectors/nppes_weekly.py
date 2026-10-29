@@ -94,7 +94,7 @@ class NppesWeeklyConnector(NppesConnector):
     key: ClassVar[str] = "nppes_weekly"
     display_name: ClassVar[str] = "NPPES NPI Registry Weekly Incremental"
     cadence: ClassVar[str] = "weekly"
-    # 0017 seeds 14; ensure_registered() adopts the registry's value.
+    # 0018 seeds 14; ensure_registered() adopts the registry's value.
     freshness_sla_days: int = 14
     # A weekly file's size is the week's activity, not the registry's: a quiet
     # week is legitimately a fraction of a busy one. The floor would refuse it.
