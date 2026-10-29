@@ -138,6 +138,85 @@ session-based with MFA and their terms prohibit it. Work there raises a
 
 ---
 
+## Standing API (v0.1)
+
+A read-only HTTP API over the data this repo has already ingested. It makes no
+outbound request and writes nothing. It reports what the ingested sources say
+about a clinician and the date each source was fetched, and nothing beyond
+that. The endpoint and field names follow the license-check-hub spec where the
+concept is the same.
+
+```bash
+make install-api
+export API_DATABASE_URL=postgresql://...   # read access is all it needs
+export API_KEYS=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
+make api                                   # uvicorn on 127.0.0.1:8000, docs at /docs
+```
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| GET | `/v1/health` | none | Liveness. No database call. |
+| GET | `/v1/sources` | key | Sources the API reads, whether each is ingested, and its as-of date |
+| GET | `/v1/clinicians/{npi}` | key | Standing by NPI |
+| GET | `/v1/clinicians?last_name=&state=&first_name=` | key | Standing by exact name plus state, up to 25 candidates |
+| POST | `/v1/standing/check` | key | Either lookup as JSON: `{"npi"}` or `{"last_name", "state", "first_name"?}` |
+
+```bash
+curl -s localhost:8000/v1/clinicians/1990001012 -H "Authorization: Bearer $API_KEYS"
+```
+
+**What a lookup returns.** For each matched clinician: identity from the CMS
+DAC file (name, credential, specialty, practice states), an exclusion screen
+(matches from the `sanctions` table with source, action date, reinstatement
+date and match basis), and license records from the `licenses` table with the
+source that asserted each one. Each screen carries a status that separates
+"looked and found nothing" from "could not look" (`no_npi_match` vs
+`not_screened`, `no_records_found` vs `no_license_source_ingested`), plus a
+`note` stating what was not covered.
+
+**The `sources` block.** Every lookup response has `sources.checked` (each
+source read, with `as_of`, `freshness_expires_at` and `stale`) and
+`sources.not_checked` (sources the API knows about but did not read, with the
+reason). Read the answer as covering the checked sources only.
+
+**Limits a caller should know.**
+
+- Exclusion matching is by NPI only. About 90% of LEIE rows carry no NPI, and
+  name plus date-of-birth matching is not enabled, so `no_npi_match` does not
+  mean the clinician is not excluded. The note on every clean result says this
+  with the counts from the last ingest.
+- Only clinicians present in the CMS DAC file can be found. An NPI outside it
+  returns `result: not_found` and no screen is run.
+- Name lookup is exact on the upper-cased name. A clinician is tied to a state
+  by an active affiliation with a practice there or by a license issued there.
+- License records come only from sources that have been ingested. Today that
+  can only be Nursys, which covers nurses enrolled through a client account. No
+  state board source is ingested.
+
+**Auth and limits.** `API_KEYS` is a comma-separated list; keys shorter than 24
+characters are ignored. Send `Authorization: Bearer <key>`. With no usable key
+the API answers 503 `auth_not_configured`. `API_RATE_LIMIT_PER_MINUTE` (default
+60, 0 disables) is a per-key fixed window held in process memory, so each
+worker counts separately.
+
+**Errors** use `{"error": {"code", "message"}}`: `invalid_request` (400, which
+includes an NPI with a bad check digit), `unauthorized` (401), `rate_limited`
+(429 with `Retry-After`), `auth_not_configured` and `store_unavailable` (503).
+
+**OpenAPI.** `docs/openapi.json` is generated from the code by `make openapi`,
+and `tests/test_api.py` fails when the two disagree. A running server also
+serves it at `/openapi.json` with an interactive view at `/docs`.
+
+**Not built yet from the license-check-hub spec:** state board license
+sources (no `state_*` connector ships), license number and profession inputs,
+`GET /v1/lookups/{id}` and any lookup log, batch endpoints, caching with
+`?fresh=true`, per-org keys stored hashed in the database with a dashboard,
+monthly quotas, metering and billing, sandbox keys, webhook re-verification,
+and board health checks. SAM.gov, NPDB and NPPES are registered sources with no
+data ingested, so they always appear under `not_checked`.
+
+---
+
 ## Repository layout
 
 ```
@@ -149,10 +228,13 @@ session-based with MFA and their terms prohibit it. Work there raises a
 │       ├── cli.py           # `clinician-standing` entry point: ingest, status
 │       ├── config.py        # environment loading and validation
 │       ├── db.py            # psycopg connection and COPY helpers
+│       ├── api/             # read-only standing API (FastAPI): app, auth, store, service
 │       └── connectors/      # one module per source: fetch, checksum, diff, load
 ├── tests/
 │   ├── conftest.py          # fixtures; no network, no database
 │   └── fixtures/            # small committed samples, including the latin-1 CSV
+├── docs/
+│   └── openapi.json         # generated by `make openapi`; a test checks it matches the code
 ├── .github/workflows/
 │   ├── ci.yml               # ruff, mypy, pytest on every push and PR
 │   └── ingest-monthly.yml   # scheduled ingest — see the cron caveat below

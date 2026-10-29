@@ -14,6 +14,11 @@ CI foundation that made it verifiable (WP0.1) and a bug that surfaced with it.
   CI installs `--require-hashes`.
 
 ### Features
+- **Standing API v0.1** (`src/clinician_standing/api`): read-only FastAPI app:
+  lookup by NPI or exact name plus state, exclusion screen and license records
+  from ingested data, a `sources` block with as-of dates on every lookup,
+  env-driven API keys and a per-key rate limit. OpenAPI in `docs/openapi.json`.
+  Optional extra `.[api]`.
 - **Nursys e-Notify connector** — consumption-only (no PII), `SecretStore`,
   90-day password rotation, `nursys rotate`, migration `0013_nursys.sql`.
 - **Clock anchors** — `renewal_anchor` / `csr_anchor` / `ce_anchor` in the rules
