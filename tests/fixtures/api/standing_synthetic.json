@@ -1,0 +1,153 @@
+{
+  "_comment": "SYNTHETIC TEST DATA. Invented clinicians named SAMPLE and TESTCASE; NPIs start 1990001 and are generated with valid check digits. No real person or record.",
+  "sources": [
+    {
+      "key": "cms_dac",
+      "display_name": "CMS Doctors and Clinicians National Downloadable File",
+      "kind": "bulk_file",
+      "cadence": "monthly",
+      "freshness_sla_days": 45,
+      "enabled": true,
+      "is_primary_source": false,
+      "fetched_at": "2026-10-02T04:12:00+00:00",
+      "freshness_expires_at": "2026-11-16T04:12:00+00:00",
+      "parsed": {"rows_after_dedupe": 5}
+    },
+    {
+      "key": "cms_revalidation",
+      "display_name": "CMS Revalidation Clinic Group Practice Reassignment",
+      "kind": "bulk_file",
+      "cadence": "monthly",
+      "freshness_sla_days": 45,
+      "enabled": true,
+      "is_primary_source": true,
+      "fetched_at": "2026-10-02T05:00:00+00:00",
+      "freshness_expires_at": "2026-11-16T05:00:00+00:00"
+    },
+    {
+      "key": "nppes",
+      "display_name": "NPPES NPI Registry Full Replicate",
+      "kind": "bulk_file",
+      "cadence": "monthly",
+      "freshness_sla_days": 45,
+      "enabled": false,
+      "is_primary_source": true
+    },
+    {
+      "key": "nursys",
+      "display_name": "Nursys e-Notify (NCSBN)",
+      "kind": "push",
+      "cadence": "push",
+      "freshness_sla_days": 90,
+      "enabled": true,
+      "is_primary_source": true,
+      "fetched_at": "2026-10-10T12:00:00+00:00",
+      "freshness_expires_at": "2027-01-08T12:00:00+00:00"
+    },
+    {
+      "key": "oig_leie",
+      "display_name": "OIG List of Excluded Individuals and Entities",
+      "kind": "bulk_file",
+      "cadence": "monthly",
+      "freshness_sla_days": 45,
+      "enabled": true,
+      "is_primary_source": true,
+      "fetched_at": "2026-08-01T02:05:00+00:00",
+      "freshness_expires_at": "2026-09-15T02:05:00+00:00",
+      "parsed": {"rows_total": 100, "rows_with_npi": 10, "name_dob_matching_enabled": false}
+    },
+    {
+      "key": "sam_gov",
+      "display_name": "SAM.gov Exclusions",
+      "kind": "bulk_file",
+      "cadence": "daily",
+      "freshness_sla_days": 7,
+      "enabled": false,
+      "is_primary_source": true
+    },
+    {
+      "key": "state_ca",
+      "display_name": "California Department of Consumer Affairs (DCA) licensee file",
+      "kind": "bulk_file",
+      "cadence": "monthly",
+      "freshness_sla_days": 30,
+      "enabled": false,
+      "is_primary_source": true
+    }
+  ],
+  "clinicians": [
+    {
+      "npi": "1990001012",
+      "first_name": "ALPHA",
+      "last_name": "SAMPLE",
+      "credential": "MD",
+      "clinician_type": "physician",
+      "primary_specialty": "FAMILY PRACTICE",
+      "practice_states": ["MN"]
+    },
+    {
+      "npi": "1990001020",
+      "first_name": "BRAVO",
+      "last_name": "SAMPLE",
+      "credential": "DO",
+      "clinician_type": "physician",
+      "primary_specialty": "INTERNAL MEDICINE",
+      "practice_states": ["MN", "WI"],
+      "sanctions": [
+        {
+          "source": "leie",
+          "action_type": "1128b4",
+          "action_date": "2025-03-15",
+          "description": "SYNTHETIC TEST EXCLUSION",
+          "match_confidence": 1.0,
+          "evidence_source_key": "oig_leie",
+          "evidence_fetched_at": "2026-08-01T02:05:00+00:00"
+        }
+      ]
+    },
+    {
+      "npi": "1990001038",
+      "first_name": "CHARLIE",
+      "last_name": "SAMPLE",
+      "credential": "NP",
+      "clinician_type": "np",
+      "primary_specialty": "NURSE PRACTITIONER",
+      "practice_states": [],
+      "sanctions": [
+        {
+          "source": "leie",
+          "action_type": "1128a1",
+          "action_date": "2019-06-01",
+          "description": "SYNTHETIC TEST EXCLUSION, REINSTATED",
+          "reinstated_date": "2022-06-01",
+          "match_confidence": 1.0,
+          "evidence_source_key": "oig_leie",
+          "evidence_fetched_at": "2026-08-01T02:05:00+00:00"
+        }
+      ],
+      "licenses": [
+        {
+          "state": "WI",
+          "license_type": "APRN",
+          "license_number": "TEST-0001",
+          "status": "active",
+          "issue_date": "2018-01-15",
+          "expiry_date": "2027-02-28",
+          "verified_at": "2026-10-10T12:00:00+00:00",
+          "evidence_source_key": "nursys",
+          "evidence_fetched_at": "2026-10-10T12:00:00+00:00",
+          "discipline_reported": false
+        }
+      ]
+    },
+    {
+      "npi": "1990001046",
+      "first_name": "DELTA",
+      "last_name": "TESTCASE",
+      "credential": "MD",
+      "clinician_type": "physician",
+      "primary_specialty": "PEDIATRICS",
+      "practice_states": ["MN"]
+    }
+  ]
+}
