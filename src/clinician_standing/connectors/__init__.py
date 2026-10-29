@@ -10,17 +10,23 @@ from collections.abc import Mapping
 
 from .base import Connector, ConnectorError, DiffResult, RunResult
 from .cms_dac import CmsDacConnector
+from .cms_facility_affiliation import CmsFacilityAffiliationConnector
+from .cms_hospitals import CmsHospitalsConnector
 from .cms_revalidation import CmsRevalidationConnector
+from .nppes import NppesConnector
 from .nursys import NursysConnector
 from .oig_leie import OigLeieConnector
 
 __all__ = [
     "CONNECTORS",
     "CmsDacConnector",
+    "CmsFacilityAffiliationConnector",
+    "CmsHospitalsConnector",
     "CmsRevalidationConnector",
     "Connector",
     "ConnectorError",
     "DiffResult",
+    "NppesConnector",
     "NursysConnector",
     "OigLeieConnector",
     "RunResult",
@@ -31,10 +37,17 @@ __all__ = [
 #: Registry key -> connector class. Order matters for ``ingest all``: the DAC
 #: file creates the practices and clinicians that the other connectors join to,
 #: so nursys (which derives licenses for already-enrolled clinicians) runs last.
+#: The directory connectors (nppes, cms_hospitals, cms_facility_affiliation)
+#: write reference tables keyed on NPI and CCN and depend on nothing, so their
+#: position only matters for reading order: hospitals before the affiliations
+#: that point at them.
 CONNECTORS: Mapping[str, type[Connector]] = {
     CmsDacConnector.key: CmsDacConnector,
     CmsRevalidationConnector.key: CmsRevalidationConnector,
     OigLeieConnector.key: OigLeieConnector,
+    NppesConnector.key: NppesConnector,
+    CmsHospitalsConnector.key: CmsHospitalsConnector,
+    CmsFacilityAffiliationConnector.key: CmsFacilityAffiliationConnector,
     NursysConnector.key: NursysConnector,
 }
 

@@ -120,12 +120,23 @@ Run `make` with no argument for the full list.
 | CMS Doctors and Clinicians National Downloadable File | `cms_dac` | 839 MB | 3.39 M | Monthly | UTF-8 |
 | CMS Revalidation Clinic Group Practice Reassignment | `cms_revalidation` | 540 MB | 3.39 M | Monthly | **latin-1** |
 | OIG LEIE (full file + monthly supplement) | `oig_leie` | 15.6 MB | 84,001 | Monthly | **latin-1** |
+| NPPES full replicate (V.2) | `nppes` | 1.2 GB zip / 11.7 GB | ~9 M | Monthly | UTF-8, per-line latin-1 fallback |
+| CMS Hospital General Information | `cms_hospitals` | ~2 MB | ~5,400 | Monthly | UTF-8 |
+| CMS Facility Affiliation Data | `cms_facility_affiliation` | ~60 MB | ~1.3 M | Monthly | UTF-8 |
+
+The last three are the **directory layer** (`0016_directory_reference.sql`).
+They describe the whole national clinician population rather than client
+rosters, land in reference tables keyed on NPI and CMS Certification Number
+(`nppes_providers`, `facilities`, `clinician_facility_affiliations`), and never
+write `affiliations` or generate obligations. `clinician_directory` joins them
+to the roster at read time: NPPES status and self-reported license states,
+medical school and graduation year from the DAC file, and every open facility
+affiliation with the facility's name.
 
 ### Not yet built
 
 | Source | Key | Size | Cadence | Notes |
 |---|---|---|---|---|
-| NPPES full replicate | `nppes` | ~9 GB | Monthly | Source of truth for taxonomy, practice address, authorized official |
 | PECOS enrollment files | `pecos` | moderate | Monthly | — |
 | SAM.gov exclusions | `sam` | small | Daily | Second exclusion source; disagreement with LEIE is an exception, not a merge |
 | Nursys e-Notify | `nursys` | push | push + API | Free institution account; API password rotates every 90 days |

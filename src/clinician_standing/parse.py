@@ -25,11 +25,20 @@ from __future__ import annotations
 
 import csv
 import sys
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-__all__ = ["LATIN1", "UTF8_BOM", "detect_encoding", "read_csv", "read_rows"]
+__all__ = [
+    "LATIN1",
+    "UTF8_BOM",
+    "DecodeStats",
+    "decode_lines",
+    "detect_encoding",
+    "read_csv",
+    "read_rows",
+]
 
 #: Encoding for the OIG LEIE and CMS revalidation files.
 LATIN1 = "latin-1"
@@ -87,6 +96,53 @@ def read_csv(
     resolved = encoding or detect_encoding(path)
     with path.open("r", encoding=resolved, newline="") as handle:
         yield from csv.DictReader(handle, delimiter=delimiter)
+
+
+@dataclass
+class DecodeStats:
+    """Counts kept by :func:`decode_lines`, for the evidence summary."""
+
+    lines: int = 0
+    latin1_lines: int = 0
+
+
+def decode_lines(raw_lines: Iterable[bytes], stats: DecodeStats | None = None) -> Iterator[str]:
+    """Decode a byte-line stream as UTF-8, falling back to latin-1 per line.
+
+    For files whose encoding is not stated by the publisher and too large to
+    probe usefully -- the NPPES replicate is ~9 GB uncompressed, and a single
+    latin-1 byte at line six million would crash a UTF-8 reader after half an
+    hour. Each line is tried as UTF-8 first (the BOM is stripped from the first
+    line) and decoded as latin-1 only if that fails, so a UTF-8 file round-trips
+    exactly and a stray latin-1 byte costs one line's worth of mojibake at worst,
+    never a dropped character and never an exception. Same rule as the module
+    docstring: no ``errors="ignore"``.
+
+    The result is fed to ``csv.reader``, which reassembles quoted fields that
+    span lines, so splitting on newlines here is safe.
+
+    Args:
+        raw_lines: Binary lines, e.g. iterating a file opened ``rb`` or a zip
+            member.
+        stats: Optional counters, updated in place.
+
+    Yields:
+        Decoded text lines, line endings preserved.
+    """
+    first = True
+    for raw in raw_lines:
+        if first:
+            first = False
+            if raw.startswith(b"\xef\xbb\xbf"):
+                raw = raw[3:]
+        if stats is not None:
+            stats.lines += 1
+        try:
+            yield raw.decode("utf-8")
+        except UnicodeDecodeError:
+            if stats is not None:
+                stats.latin1_lines += 1
+            yield raw.decode(LATIN1)
 
 
 #: Alias kept because "read_rows" reads better at call sites that stream.

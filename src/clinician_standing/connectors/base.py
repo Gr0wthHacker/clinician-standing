@@ -618,6 +618,43 @@ class Connector(ABC):
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ConnectorError(f"{url} did not return valid JSON: {exc}") from exc
 
+    def fetch_text(self, url: str, *, max_bytes: int = 5 << 20) -> str:
+        """GET a small text document (an HTML index page) and decode it.
+
+        For sources that publish their download links on a web page rather than
+        in a JSON catalog -- NPPES lists its monthly replicate on
+        ``download.cms.gov/nppes/NPI_Files.html``. Same trust boundary as
+        :meth:`fetch_json`: the URL is checked before anything is opened, and
+        whatever link is read out of the page is checked again before download.
+
+        Args:
+            url: Absolute URL. Checked against :meth:`require_allowed_url`.
+            max_bytes: Refuse a body larger than this. An index page is tens of
+                kilobytes; anything near the cap is not the page we asked for.
+
+        Returns:
+            The decoded body (UTF-8, latin-1 fallback; never lossy).
+
+        Raises:
+            ConnectorError: If the URL is not allowed, on transport failure, or
+                if the body exceeds ``max_bytes``.
+        """
+        self.require_allowed_url(url)
+        request = urllib.request.Request(url, headers={"User-Agent": self.settings.user_agent})
+        try:
+            with urllib.request.urlopen(
+                request, timeout=self.settings.http_timeout_seconds
+            ) as response:
+                body: bytes = response.read(max_bytes + 1)
+        except (urllib.error.URLError, OSError, TimeoutError) as exc:
+            raise ConnectorError(f"could not fetch {url}: {exc}") from exc
+        if len(body) > max_bytes:
+            raise ConnectorError(f"{url} returned more than {max_bytes:,} bytes; refusing")
+        try:
+            return body.decode("utf-8")
+        except UnicodeDecodeError:
+            return body.decode("latin-1")
+
     def work_file(self, name: str) -> Path:
         """Return a path inside the scratch directory for this connector."""
         return self.settings.ensure_work_dir() / f"{self.key}-{name}"
