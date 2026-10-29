@@ -29,6 +29,7 @@ __all__ = [
     "LicenseRecordOut",
     "LicenseScreen",
     "LookupResult",
+    "PossibleExclusionMatch",
     "SourceRole",
     "SourceStatus",
     "SourcesBlock",
@@ -188,9 +189,52 @@ class ExclusionMatch(BaseModel):
     match_confidence: float | None
 
 
+class PossibleExclusionMatch(BaseModel):
+    """An LEIE record with no NPI that names someone like this clinician.
+
+    Proposed by name and state against NPPES. Never an exclusion finding: the
+    LEIE record carries no NPI, NPPES carries no date of birth, and a person has
+    to compare the two before anything is concluded.
+    """
+
+    status: Literal["possible_match_needs_review", "confirmed_by_review"] = Field(
+        description=(
+            "possible_match_needs_review until a person reviews it. confirmed_by_review "
+            "means a reviewer judged it the same person; it is still not an NPI match."
+        )
+    )
+    source: Literal["leie"]
+    source_key: str | None = Field(description="Registry key of the evidence row.")
+    source_as_of: datetime | None = Field(description="Fetch time of that evidence row.")
+    match_basis: Literal["name_state"]
+    match_confidence: float = Field(
+        description=(
+            "Below 1.0 by construction. Orders candidates for review; not a measured probability."
+        ),
+        lt=1.0,
+        gt=0.0,
+    )
+    match_detail: dict[str, str | float] = Field(
+        description="How first name, middle name and state agreed."
+    )
+    candidate_count: int = Field(
+        description="How many NPIs this LEIE record was linked to. Confidence is split across them."
+    )
+    leie_last_name: str
+    leie_first_name: str | None
+    leie_middle_name: str | None
+    leie_state: str
+    leie_specialty: str | None
+    action_type: str | None
+    action_date: date | None
+    reinstated_date: date | None
+    open: bool = Field(description="True when the LEIE record shows no reinstatement date.")
+
+
 ExclusionStatus = Literal[
     "open_exclusion_found",
     "reinstated_exclusion_found",
+    "possible_match_needs_review",
     "no_npi_match",
     "not_screened",
 ]
@@ -198,7 +242,16 @@ ExclusionStatus = Literal[
 
 class ExclusionScreen(BaseModel):
     status: ExclusionStatus
-    matches: list[ExclusionMatch]
+    matches: list[ExclusionMatch] = Field(
+        description="Exclusion records matched to this clinician on NPI."
+    )
+    possible_matches: list[PossibleExclusionMatch] = Field(
+        default_factory=list,
+        description=(
+            "LEIE records with no NPI linked to this clinician by name and state only. "
+            "Each needs human review; none is asserted as an exclusion."
+        ),
+    )
     sources_screened: list[str]
     note: str
 

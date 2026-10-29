@@ -24,6 +24,7 @@ from .models import (
     LicenseRecordOut,
     LicenseScreen,
     LookupResult,
+    PossibleExclusionMatch,
     SourceRole,
     SourcesBlock,
     SourcesResponse,
@@ -56,10 +57,11 @@ IDENTITY_SOURCE = "cms_dac"
 
 _EXCLUSION_SOURCES = frozenset({"oig_leie", "sam_gov", "npdb_cq"})
 _LICENSE_SOURCES = frozenset({"nursys", "fsmb_pdc"})
-_IDENTITY_SOURCES = frozenset({"cms_dac", "nppes"})
+#: NPPES does not fill the identity block (the DAC file does); it is read to
+#: link LEIE records that carry no NPI to NPIs by name and state.
+_IDENTITY_SOURCES = frozenset({"cms_dac", "nppes", "nppes_weekly"})
 
 _NOT_INGESTED = "No data from this source has been ingested."
-_NOT_READ = "This API does not read data from this source yet."
 
 
 def classify_source(key: str) -> SourceRole | None:
@@ -74,11 +76,8 @@ def classify_source(key: str) -> SourceRole | None:
 
 
 def _status(source: SourceRecord, role: SourceRole, now: datetime) -> SourceStatus:
-    readable = source.key != "nppes"
-    checked = readable and source.ingested
-    reason = None
-    if not checked:
-        reason = _NOT_READ if not readable else _NOT_INGESTED
+    checked = source.ingested
+    reason = None if checked else _NOT_INGESTED
     expires = source.freshness_expires_at
     return SourceStatus(
         key=source.key,
@@ -140,14 +139,23 @@ def _leie_coverage(leie: SourceRecord | None) -> str:
         if name_dob
         else "name and date-of-birth matching is not enabled"
     )
+    linked = parsed.get("rows_without_npi_with_candidates")
+    if parsed.get("name_state_matching_ran") and isinstance(linked, int):
+        name_state = (
+            f" Of those, {linked:,} were linked by name and state to at least one NPPES NPI "
+            "as possible matches for review; a possible match is never reported as an "
+            "exclusion."
+        )
+    else:
+        name_state = " Name and state matching against NPPES did not run for this snapshot."
     if isinstance(total, int) and isinstance(with_npi, int):
         return (
             f"{total - with_npi:,} of the {total:,} records in the OIG LEIE file carry no "
-            f"NPI and could not be matched, and {matching}."
+            f"NPI and cannot be matched on NPI, and {matching}.{name_state}"
         )
     return (
         "The share of OIG LEIE records that carry no NPI was not recorded by the ingest, "
-        f"so the unscreened count is unknown, and {matching}."
+        f"so the count not matched on NPI is unknown, and {matching}.{name_state}"
     )
 
 
@@ -175,8 +183,36 @@ def _exclusions(
         )
         for s in record.sanctions
     ]
+    possible = [
+        PossibleExclusionMatch(
+            status=(
+                "confirmed_by_review"
+                if p.review_status == "confirmed"
+                else "possible_match_needs_review"
+            ),
+            source="leie",
+            source_key=p.evidence_source_key,
+            source_as_of=p.evidence_fetched_at,
+            match_basis="name_state",
+            match_confidence=p.match_confidence,
+            match_detail={
+                k: v for k, v in p.match_detail.items() if isinstance(v, str | int | float)
+            },
+            candidate_count=p.candidate_count,
+            leie_last_name=p.leie_last_name,
+            leie_first_name=p.leie_first_name,
+            leie_middle_name=p.leie_middle_name,
+            leie_state=p.leie_state,
+            leie_specialty=p.leie_specialty,
+            action_type=p.exclusion_type,
+            action_date=p.exclusion_date,
+            reinstated_date=p.reinstatement_date,
+            open=p.reinstatement_date is None,
+        )
+        for p in record.possible_exclusions
+    ]
 
-    if not screened and not matches:
+    if not screened and not matches and not possible:
         return ExclusionScreen(
             status="not_screened",
             matches=[],
@@ -205,21 +241,30 @@ def _exclusions(
             "Every exclusion record matched to this clinician carries a reinstatement date."
         )
     else:
-        status = "no_npi_match"
+        status = "possible_match_needs_review" if possible else "no_npi_match"
         sources_text = _join([f"{_name(s)} snapshot fetched {_date(s.as_of)}" for s in screened])
         sentences.append(f"No exclusion record matched this NPI in the {sources_text}.")
+    if possible:
+        sentences.append(
+            f"{len(possible)} OIG LEIE record{'' if len(possible) == 1 else 's'} with no NPI "
+            f"name{'s' if len(possible) == 1 else ''} someone with this clinician's name in a "
+            "state tied to them. That is a name and state match only, with no date of birth "
+            "compared: each is a possible match that needs human review, and none is "
+            "asserted as an exclusion."
+        )
 
     if any(s.key == "oig_leie" for s in screened):
         sentences.append(_leie_coverage(registry.get("oig_leie")))
     sentences.extend(_stale_sentences(screened))
     if unscreened:
         sentences.append(f"Not screened: {_join([_name(s) for s in unscreened])}.")
-    if status == "no_npi_match":
+    if status in ("no_npi_match", "possible_match_needs_review"):
         sentences.append("This result does not establish that the clinician is not excluded.")
 
     return ExclusionScreen(
         status=status,
         matches=matches,
+        possible_matches=possible,
         sources_screened=[s.key for s in screened],
         note=" ".join(sentences),
     )

@@ -261,6 +261,7 @@
       "ExclusionScreen": {
         "properties": {
           "matches": {
+            "description": "Exclusion records matched to this clinician on NPI.",
             "items": {
               "$ref": "#/components/schemas/ExclusionMatch"
             },
@@ -270,6 +271,14 @@
           "note": {
             "title": "Note",
             "type": "string"
+          },
+          "possible_matches": {
+            "description": "LEIE records with no NPI linked to this clinician by name and state only. Each needs human review; none is asserted as an exclusion.",
+            "items": {
+              "$ref": "#/components/schemas/PossibleExclusionMatch"
+            },
+            "title": "Possible Matches",
+            "type": "array"
           },
           "sources_screened": {
             "items": {
@@ -282,6 +291,7 @@
             "enum": [
               "open_exclusion_found",
               "reinstated_exclusion_found",
+              "possible_match_needs_review",
               "no_npi_match",
               "not_screened"
             ],
@@ -583,6 +593,184 @@
           "note"
         ],
         "title": "LicenseScreen",
+        "type": "object"
+      },
+      "PossibleExclusionMatch": {
+        "description": "An LEIE record with no NPI that names someone like this clinician.\n\nProposed by name and state against NPPES. Never an exclusion finding: the\nLEIE record carries no NPI, NPPES carries no date of birth, and a person has\nto compare the two before anything is concluded.",
+        "properties": {
+          "action_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Action Date"
+          },
+          "action_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Action Type"
+          },
+          "candidate_count": {
+            "description": "How many NPIs this LEIE record was linked to. Confidence is split across them.",
+            "title": "Candidate Count",
+            "type": "integer"
+          },
+          "leie_first_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Leie First Name"
+          },
+          "leie_last_name": {
+            "title": "Leie Last Name",
+            "type": "string"
+          },
+          "leie_middle_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Leie Middle Name"
+          },
+          "leie_specialty": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Leie Specialty"
+          },
+          "leie_state": {
+            "title": "Leie State",
+            "type": "string"
+          },
+          "match_basis": {
+            "const": "name_state",
+            "title": "Match Basis",
+            "type": "string"
+          },
+          "match_confidence": {
+            "description": "Below 1.0 by construction. Orders candidates for review; not a measured probability.",
+            "exclusiveMaximum": 1.0,
+            "exclusiveMinimum": 0.0,
+            "title": "Match Confidence",
+            "type": "number"
+          },
+          "match_detail": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "number"
+                }
+              ]
+            },
+            "description": "How first name, middle name and state agreed.",
+            "title": "Match Detail",
+            "type": "object"
+          },
+          "open": {
+            "description": "True when the LEIE record shows no reinstatement date.",
+            "title": "Open",
+            "type": "boolean"
+          },
+          "reinstated_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reinstated Date"
+          },
+          "source": {
+            "const": "leie",
+            "title": "Source",
+            "type": "string"
+          },
+          "source_as_of": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Fetch time of that evidence row.",
+            "title": "Source As Of"
+          },
+          "source_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Registry key of the evidence row.",
+            "title": "Source Key"
+          },
+          "status": {
+            "description": "possible_match_needs_review until a person reviews it. confirmed_by_review means a reviewer judged it the same person; it is still not an NPI match.",
+            "enum": [
+              "possible_match_needs_review",
+              "confirmed_by_review"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "source",
+          "source_key",
+          "source_as_of",
+          "match_basis",
+          "match_confidence",
+          "match_detail",
+          "candidate_count",
+          "leie_last_name",
+          "leie_first_name",
+          "leie_middle_name",
+          "leie_state",
+          "leie_specialty",
+          "action_type",
+          "action_date",
+          "reinstated_date",
+          "open"
+        ],
+        "title": "PossibleExclusionMatch",
         "type": "object"
       },
       "SourceStatus": {
