@@ -71,7 +71,7 @@ where = ["src"]
 include = ["clinician_standing*"]
 
 [tool.setuptools.package-data]
-clinician_standing = ["py.typed"]
+clinician_standing = ["py.typed", "obligations_lite/schema.sql"]
 
 # --- ruff ------------------------------------------------------------------
 [tool.ruff]

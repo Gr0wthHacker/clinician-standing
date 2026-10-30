@@ -1,0 +1,5 @@
+npi,name,profession,specialty,states_required,held_states,expiry_ZZ,expiry_YY,board_read_at
+9900000001,Placeholder One,NP,Family,"ZZ,YY",ZZ,2027-01-15,,2026-10-20
+9900000002,Placeholder Two,NP,Family,ZZ,ZZ,,,2026-10-20
+9900000003,Placeholder Three,MD,Internal,ZZ,ZZ,2028-06-30,,2026-10-20
+9900000004,Placeholder Four,NP,Psych,ZZ,,,,

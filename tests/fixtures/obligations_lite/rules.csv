@@ -1,0 +1,6 @@
+rule_key,version,jurisdiction,profession,credential_type,trigger,lead_days,service_price_cents,government_fee_cents,cycle_months,prerequisites,form,delegation_mechanism,source_url,last_verified,verified_by,second_verifier,effective_date,change_source
+ZZ:NP:license:renewal,1,ZZ,NP,license,renewal,60,15000,10000,24,,Form R-1,clinician signs,https://example.invalid/zz/np-renewal,2026-10-01,synthetic,synthetic,,fixture
+ZZ:NP:license:initial,1,ZZ,NP,license,initial,0,60000,25000,,RN license,Form A-1,clinician signs,https://example.invalid/zz/np-initial,2026-10-01,synthetic,synthetic,,fixture
+YY:NP:license:initial,1,YY,NP,license,initial,0,60000,,,,Form A-9,clinician signs,https://example.invalid/yy/np-initial,2026-10-01,synthetic,synthetic,,fixture
+YY:NP:license:renewal,1,YY,NP,license,renewal,45,15000,8000,24,,Form R-9,clinician signs,https://example.invalid/yy/np-renewal,2026-10-01,synthetic,synthetic,,fixture
+ZZ:MD:license:renewal,1,ZZ,MD,license,renewal,90,20000,30000,24,,Form R-2,clinician signs,https://example.invalid/zz/md-renewal,2026-10-01,synthetic,synthetic,,fixture
