@@ -404,3 +404,38 @@ commented out in `.env.example` until the connector ships.
 ---
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
+
+---
+
+## Obligations engine phase 2 (SQLite)
+
+`src/clinician_standing/obligations_lite/` is the Obligations Engine PRD's phase 2: the PRD data
+model on SQLite (`schema.sql`), a ~200-line generator that turns rules x roster into dated, priced
+obligations, the free roster audit, a quote, and filing write-back. It needs nothing beyond the
+standard library and moves to Postgres as an import, since the tables match the PRD.
+
+```bash
+M="python -m clinician_standing.obligations_lite --db obligations.sqlite"
+$M load-rules rules.csv                      # verified rows only: source_url, last_verified, verified_by
+$M load-roster roster.csv --org g1 --org-name "Example Group" --start 2026-11-01 --owner "Ops lead"
+$M generate --as-of 2026-11-01               # idempotent; reruns change nothing
+$M audit --org g1                            # missing states, renewals in 120 days, cost of gaps
+$M quote --org g1 --rack-pppm 30000          # filings plus the subscription, $200 PPPM floor
+$M file <obligation_id> --submitted 2026-11-10
+$M close 1 --approved 2026-12-01 --days 21 --fee 10000 --rule-correct yes
+```
+
+- **Rules** carry `source_url`, `last_verified`, `verified_by` and `second_verifier` (R1). A fee the
+  board does not publish stays blank and is shown as "not published". No rule data ships here; the
+  test fixtures use the invented jurisdictions ZZ and YY.
+- **Roster CSV**: `npi, name, profession, specialty, states_required, held_states,
+  expiry_<STATE>, board_read_at`. Expiry is read from the board and never calculated; a held
+  license with no board read becomes `needs_board_read` and cannot be filed.
+- **Generator**: `renewal` obligations are due at board expiry minus the rule's lead days;
+  `initial` obligations cover states the roster requires with no active license. Each row stamps
+  the rule version, source and last-verified date. A new rule version reprices every unfiled
+  obligation on the next run; obligations with a filing are never rewritten. Emits `new_state`
+  and `expiry_window` events. Alert dates follow the 120/60/30/7-day calendar.
+- **Write-back (T909)**: no filing closes without `actual_processing_days`, `actual_fee_paid` and
+  `rule_was_correct`, enforced in the CLI and by a schema CHECK. `rule_was_correct = no` needs a
+  `blocker_encountered` note and opens a `rule_review_tickets` row.
