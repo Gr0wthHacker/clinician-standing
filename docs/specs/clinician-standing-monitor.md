@@ -68,3 +68,15 @@ Set later under T621; Stripe prices are referenced by env var.
 4. Diff state. The monthly workflow keeps connector state in an Actions cache, which is evicted after 7 days without a hit. The monitor diffs against its own snapshot table to avoid that, but raw payload retention still needs the `s3://` storage fix.
 6. Counsel: does selling ongoing exclusion screening for staffing decisions raise FCRA questions? This is the same question your Whitecoat notes raised for credentialing use.
 7. Who receives alerts per roster, and is there a response-time promise? None is assumed here.
+
+## Build status (T620)
+
+Built in `src/clinician_standing/monitor/` on the obligations_lite pattern (SQLite tables that mirror the planned Postgres ones):
+
+- `schema.sql`: `monitor_rosters`, `monitor_roster_members` (NPI, name, state, credential; any other CSV column is refused), `monitor_snapshots`, `monitor_alerts`, `monitor_runs`.
+- `snapshot.py` reads standing through `api.service.check`, so the monitor and the API cannot disagree. `diff.py` names each change: new exclusion and reinstatement, adverse license status, discipline, expiry inside 60 days, NPI leaving or returning to the CMS file. Stale sources are written once per roster.
+- New exclusion alerts are written as `held` and send only after `release` (the review rule in the private offer doc). License changes send immediately.
+- `notify.py`: vendor by `STANDING_MONITOR_NOTIFIER` (`none` or `outbox`). `digest.py`: monthly HTML digest with the checked and not-checked sources and the NPI-only note. `billing.py`: Stripe price id from `STRIPE_PRICE_STANDING_MONITOR`, minimum from `STANDING_MONITOR_MIN_CLINICIANS`, `is_pppm_floored = false`.
+- CLI: `python -m clinician_standing.monitor roster|run|release|digest`.
+
+Not yet built: revalidation due-date alerts (the standing response does not carry the revalidation file yet), the Postgres migration and RLS, the read endpoints, the Lovable screens, PDF digest, SAM.gov connector, and wiring `run` into `ingest-monthly.yml` (needs a persistent store for the snapshot table first).
