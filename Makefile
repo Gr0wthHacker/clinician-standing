@@ -6,7 +6,7 @@ VENV   ?= .venv
 BIN    := $(VENV)/bin
 
 .DEFAULT_GOAL := help
-.PHONY: help install install-s3 install-api api openapi lock test test-db sample sample-fixtures lint typecheck migrate ingest status clean
+.PHONY: help install install-s3 install-api api openapi lock test test-db sample sample-fixtures lint typecheck migrate migrate-psql ingest status clean
 
 help: ## Show this list of targets.
 	@grep -hE '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[1m%-12s\033[0m %s\n", $$1, $$2}'
@@ -75,6 +75,9 @@ migrate: ## Apply db/migrations to the linked Supabase project via the supabase 
 	@mkdir -p supabase
 	@test -e supabase/migrations || ln -s ../db/migrations supabase/migrations
 	supabase db push --include-all
+
+migrate-psql: ## Apply db/migrations and db/seeds with psql to MIGRATION_DATABASE_URL (Neon or any Postgres). See docs/neon.md.
+	scripts/migrate_psql.sh --seeds
 
 ingest: ## Run every enabled connector: download, diff, load evidence.
 	$(BIN)/clinician-standing ingest --all

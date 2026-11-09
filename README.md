@@ -78,6 +78,8 @@ make status                  # last run, rows changed and freshness per source
 
 Requires Python 3.11 and, for `make migrate`, the
 [Supabase CLI](https://supabase.com/docs/guides/cli) linked to the project.
+On Neon or any other Postgres, `make migrate-psql` applies the same files with
+`psql` instead; see `docs/neon.md`.
 
 The first `make ingest` downloads roughly 1.4 GB and takes 10 to 25 minutes
 depending on how CMS is feeling. Budget about 5 GB of free disk in
